@@ -1,0 +1,22 @@
+{
+  "origem": "FLN",
+  "destinos": ["RIO", "GIG", "SDU"],
+  "data_ida": "2026-10-31",
+  "data_volta": "2026-11-22",
+  "adultos": 1,
+  "classe": "economy",
+  "moeda": "BRL",
+  "idioma": "pt-BR",
+
+  "alvos": {
+    "jackpot": 800,
+    "alerta": 900,
+    "aviso": 1000
+  },
+
+  "degraus_preco": [800, 900, 1000, 1200],
+
+  "antispam_horas": 12,
+  "pausa_entre_buscas_seg": 2.5,
+  "tentativas": 3
+}

@@ -1,0 +1,76 @@
+name: Monitor de voos FLN <-> Rio
+
+on:
+  schedule:
+    # Cron do GitHub e sempre em UTC. Brasilia = UTC-3.
+    - cron: "0 4 * * *"    # 01:00 BRT
+    - cron: "30 5 * * *"   # 02:30 BRT
+    - cron: "0 7 * * *"    # 04:00 BRT
+    - cron: "30 8 * * *"   # 05:30 BRT
+    - cron: "0 15 * * *"   # 12:00 BRT - resumo diario
+  workflow_dispatch:
+    inputs:
+      forcar:
+        description: "Mandar mensagem no Telegram mesmo sem promocao"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: monitor-voos
+  cancel-in-progress: false
+
+jobs:
+  checar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Montar argumentos
+        id: args
+        run: |
+          args=""
+          if [ "${{ github.event.schedule }}" = "0 15 * * *" ]; then
+            args="--resumo"
+          fi
+          if [ "${{ github.event.inputs.forcar }}" = "true" ]; then
+            args="$args --force"
+          fi
+          echo "valor=$args" >> "$GITHUB_OUTPUT"
+
+      - name: Buscar precos
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
+        run: python monitor.py ${{ steps.args.outputs.valor }}
+
+      - name: Guardar historico de precos
+        if: always()
+        run: |
+          git config user.name "monitor-voos"
+          git config user.email "actions@github.com"
+          git add state/
+          if git diff --staged --quiet; then
+            echo "Nada novo para gravar."
+          else
+            git commit -m "precos $(TZ=America/Sao_Paulo date '+%d/%m %H:%M')"
+            # Outra execucao pode ter commitado no meio do caminho.
+            for i in 1 2 3; do
+              git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push && exit 0
+              sleep 5
+            done
+            exit 1
+          fi
