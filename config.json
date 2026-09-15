@@ -1,6 +1,7 @@
 {
   "origem": "FLN",
   "destinos": ["RIO", "GIG", "SDU"],
+  "destinos_vaidepromo": ["GIG", "SDU"],
   "data_ida": "2026-10-31",
   "data_volta": "2026-11-22",
   "adultos": 1,
@@ -18,5 +19,6 @@
 
   "antispam_horas": 12,
   "pausa_entre_buscas_seg": 2.5,
-  "tentativas": 3
+  "tentativas": 3,
+  "timeout_vdp_seg": 120
 }

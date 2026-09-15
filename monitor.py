@@ -2,14 +2,13 @@
 """
 Monitor de passagens Florianopolis <-> Rio de Janeiro.
 
-Estrategia: em vez de confiar no ranking "melhores voos" do Google (que esconde
-tarifas baratas), consulta com teto de preco crescente (800 -> 900 -> 1000 ...).
-O primeiro teto que devolve resultado e o piso real daquela rota naquele momento.
+Consulta duas fontes (Google Flights e Vai de Promo — ver fontes.py), compara
+o piso das duas e avisa no Telegram quando entra na faixa de preco desejada.
 
 Uso:
-    python monitor.py            # roda e so avisa se houver promocao
-    python monitor.py --force    # roda e sempre manda mensagem
-    python monitor.py --resumo   # manda o resumo diario com a tendencia
+    python monitor.py            # so avisa se houver promocao
+    python monitor.py --force    # sempre manda mensagem
+    python monitor.py --resumo   # resumo diario com a tendencia
     python monitor.py --dry-run  # nao envia nada, so imprime
 """
 from __future__ import annotations
@@ -17,16 +16,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import random
 import sys
-import time
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fast_flights import FlightQuery, Passengers, create_query, get_flights
+from fontes import GOOGLE, VAIDEPROMO, Oferta, Resultado, buscar_google, buscar_vaidepromo
 
 RAIZ = Path(__file__).resolve().parent
 ESTADO = RAIZ / "state"
@@ -38,7 +34,6 @@ BRT = timezone(timedelta(hours=-3))
 if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-# O Google nao devolve nome de cidade pelo codigo IATA nesta API; mapa so para exibicao.
 NOMES = {
     "FLN": "Florianópolis",
     "RIO": "Rio (todos os aeroportos)",
@@ -66,124 +61,6 @@ def agora() -> datetime:
 
 def log(msg: str) -> None:
     print(f"[{agora():%H:%M:%S}] {msg}", flush=True)
-
-
-# --------------------------------------------------------------------------- #
-# Busca
-# --------------------------------------------------------------------------- #
-
-@dataclass
-class Oferta:
-    preco: int
-    companhia: str
-    rota: str
-    partida: str
-    chegada: str
-    paradas: int
-    destino: str
-
-    def linha(self) -> str:
-        conexoes = "direto" if self.paradas == 0 else (
-            "1 conexão" if self.paradas == 1 else f"{self.paradas} conexões"
-        )
-        preco = f"{self.preco:,}".replace(",", ".")
-        return (
-            f"<b>R$ {preco}</b> — {self.companhia}\n"
-            f"   {self.rota}  ({conexoes})\n"
-            f"   sai {self.partida} · chega {self.chegada}"
-        )
-
-
-@dataclass
-class ResultadoDestino:
-    destino: str
-    piso: int | None = None          # menor preco encontrado
-    ofertas: list[Oferta] = field(default_factory=list)
-    url: str = ""
-    erro: str | None = None
-
-
-class SemResultado(Exception):
-    """O Google respondeu ok, mas nao existe voo dentro do teto pedido."""
-
-
-def _monta_query(cfg: dict, destino: str, teto: int | None):
-    return create_query(
-        flights=[
-            FlightQuery(date=cfg["data_ida"], from_airport=cfg["origem"], to_airport=destino),
-            FlightQuery(date=cfg["data_volta"], from_airport=destino, to_airport=cfg["origem"]),
-        ],
-        seat=cfg["classe"],
-        trip="round-trip",
-        passengers=Passengers(adults=cfg["adultos"]),
-        language=cfg["idioma"],
-        currency=cfg["moeda"],
-        max_price=teto,
-    )
-
-
-def _buscar(query, tentativas: int, proxy: str | None):
-    """Devolve a lista de ofertas. Levanta SemResultado quando nada cabe no teto."""
-    ultimo = None
-    for n in range(1, tentativas + 1):
-        try:
-            return get_flights(query, proxy=proxy) if proxy else get_flights(query)
-        except TypeError:
-            # A lib estoura TypeError quando o payload de voos vem vazio. Isso e
-            # "nenhum voo dentro do teto", nao falha de rede (verificado em teste).
-            raise SemResultado
-        except Exception as exc:  # rede, bloqueio, mudanca no HTML
-            ultimo = exc
-            if n < tentativas:
-                espera = 2 ** n + random.uniform(0, 1.5)
-                log(f"    tentativa {n} falhou ({type(exc).__name__}), repetindo em {espera:.1f}s")
-                time.sleep(espera)
-    raise RuntimeError(f"{type(ultimo).__name__}: {ultimo}")
-
-
-def _para_oferta(voo, destino: str) -> Oferta:
-    pernas = voo.flights
-    rota = "-".join([pernas[0].from_airport.code] + [p.to_airport.code for p in pernas])
-    d, a = pernas[0].departure, pernas[-1].arrival
-    return Oferta(
-        preco=int(voo.price),
-        companhia="/".join(voo.airlines) or voo.type,
-        rota=rota,
-        partida=f"{d.date[2]:02d}/{d.date[1]:02d} {d.time[0]:02d}:{d.time[1]:02d}",
-        chegada=f"{a.date[2]:02d}/{a.date[1]:02d} {a.time[0]:02d}:{a.time[1]:02d}",
-        paradas=len(pernas) - 1,
-        destino=destino,
-    )
-
-
-def varrer_destino(cfg: dict, destino: str, proxy: str | None) -> ResultadoDestino:
-    """Sobe a escada de tetos ate achar o primeiro que devolve voo."""
-    res = ResultadoDestino(destino=destino, url=_monta_query(cfg, destino, None).url())
-    pausa = cfg["pausa_entre_buscas_seg"]
-    tentativas = cfg["tentativas"]
-
-    for teto in list(cfg["degraus_preco"]) + [None]:
-        rotulo = f"ate R$ {teto}" if teto else "sem teto (melhores voos)"
-        try:
-            voos = _buscar(_monta_query(cfg, destino, teto), tentativas, proxy)
-        except SemResultado:
-            log(f"  {destino} {rotulo}: nada")
-            time.sleep(pausa)
-            continue
-        except RuntimeError as exc:
-            # Falha de rede/bloqueio num degrau nao invalida os outros: segue a escada.
-            log(f"  {destino} {rotulo}: ERRO {exc}")
-            res.erro = str(exc)
-            time.sleep(pausa)
-            continue
-
-        res.ofertas = sorted((_para_oferta(v, destino) for v in voos), key=lambda o: o.preco)
-        res.piso = res.ofertas[0].preco
-        res.erro = None  # achou preco: falhas em degraus anteriores nao importam mais
-        log(f"  {destino} {rotulo}: {len(voos)} ofertas, piso R$ {res.piso}")
-        return res
-
-    return res
 
 
 # --------------------------------------------------------------------------- #
@@ -248,15 +125,19 @@ def gravar_ultimo_alerta(piso: int, faixa: str) -> None:
     )
 
 
-def gravar_historico(resultados: list[ResultadoDestino]) -> None:
+def gravar_historico(resultados: list[Resultado]) -> None:
     ESTADO.mkdir(exist_ok=True)
-    linha = {
-        "quando": agora().isoformat(timespec="minutes"),
-        "pisos": {r.destino: r.piso for r in resultados},
-        "erros": {r.destino: r.erro for r in resultados if r.erro},
-    }
+    pisos: dict[str, dict[str, int | None]] = {}
+    erros: dict[str, str] = {}
+    for r in resultados:
+        pisos.setdefault(r.fonte, {})[r.destino] = r.piso
+        if r.erro:
+            erros[f"{r.fonte}/{r.destino}"] = r.erro
     with HISTORICO.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(linha, ensure_ascii=False) + "\n")
+        fh.write(json.dumps(
+            {"quando": agora().isoformat(timespec="minutes"), "pisos": pisos, "erros": erros},
+            ensure_ascii=False,
+        ) + "\n")
 
 
 def ler_historico(dias: int = 30) -> list[dict]:
@@ -277,57 +158,65 @@ def ler_historico(dias: int = 30) -> list[dict]:
 
 
 def pisos_validos(registros: list[dict]) -> list[int]:
-    return [p for reg in registros for p in reg.get("pisos", {}).values() if isinstance(p, int)]
+    """Aceita o formato antigo ({destino: piso}) e o novo ({fonte: {destino: piso}})."""
+    saida = []
+    for reg in registros:
+        for valor in (reg.get("pisos") or {}).values():
+            if isinstance(valor, int):
+                saida.append(valor)
+            elif isinstance(valor, dict):
+                saida.extend(p for p in valor.values() if isinstance(p, int))
+    return saida
 
 
 # --------------------------------------------------------------------------- #
 # Mensagem
 # --------------------------------------------------------------------------- #
 
-def montar_mensagem(cfg: dict, resultados: list[ResultadoDestino], faixa: str,
+def montar_mensagem(cfg: dict, resultados: list[Resultado], faixa: str,
                     piso: int | None, motivo: str, resumo: bool) -> str:
-    alvos = cfg["alvos"]
     ida = datetime.fromisoformat(cfg["data_ida"]).strftime("%d/%m/%Y")
     volta = datetime.fromisoformat(cfg["data_volta"]).strftime("%d/%m/%Y")
 
     partes = [
-        "<b>" + CABECALHO[faixa].format(**alvos) + "</b>",
+        "<b>" + CABECALHO[faixa].format(**cfg["alvos"]) + "</b>",
         f"✈️ {NOMES.get(cfg['origem'], cfg['origem'])} → Rio de Janeiro · ida e volta",
         f"📅 {ida} → {volta} · {cfg['adultos']} pessoa · econômica",
-        "",
     ]
 
     com_oferta = [r for r in resultados if r.ofertas]
     if not com_oferta:
-        partes.append("Nenhuma oferta retornada nesta rodada.")
-    for r in sorted(com_oferta, key=lambda r: r.piso or 10 ** 9):
-        partes.append(f"<b>— {NOMES.get(r.destino, r.destino)} —</b>")
-        for o in r.ofertas[:3]:
-            partes.append(o.linha())
-        partes.append(f'<a href="{r.url}">abrir no Google Flights</a>')
-        partes.append("")
+        partes += ["", "Nenhuma oferta retornada nesta rodada."]
+
+    for fonte in (GOOGLE, VAIDEPROMO):
+        da_fonte = [r for r in com_oferta if r.fonte == fonte]
+        if not da_fonte:
+            continue
+        melhor = min(r.piso for r in da_fonte if r.piso is not None)
+        partes += ["", f"━━ <b>{fonte}</b> · piso R$ {melhor} ━━"]
+        for r in sorted(da_fonte, key=lambda r: r.piso or 10 ** 9):
+            partes.append(f"<i>{NOMES.get(r.destino, r.destino)}</i>")
+            for o in r.ofertas[:2]:
+                partes.append(o.linha())
+            partes.append(f'<a href="{r.url}">ver ofertas</a>')
 
     historico = ler_historico(30)
     todos = pisos_validos(historico)
     if todos and piso is not None:
         minimo = min(todos)
-        media = round(sum(todos) / len(todos))
-        partes.append(f"📉 Mínimo em 30 dias: R$ {minimo} · média R$ {media}")
+        partes += ["", f"📉 Mínimo em 30 dias: R$ {minimo} · média R$ {round(sum(todos)/len(todos))}"]
         # So faz sentido falar em recorde depois de algumas medicoes.
         if piso <= minimo and len(historico) >= 5:
             partes.append("⭐ <b>É o menor preço já registrado pelo monitor.</b>")
 
     if resumo:
-        partes.append("")
-        partes.append(f"<i>Resumo diário · {len(historico)} medições nos últimos 30 dias</i>")
+        partes.append(f"<i>Resumo diário · {len(historico)} medições em 30 dias</i>")
 
     erros = [r for r in resultados if r.erro]
     if erros:
-        partes.append("")
-        partes.append("⚠️ <i>Falha ao consultar: " + ", ".join(r.destino for r in erros) + "</i>")
+        partes += ["", "⚠️ <i>Falhou: " + ", ".join(f"{r.fonte}/{r.destino}" for r in erros) + "</i>"]
 
-    partes.append("")
-    partes.append(f"<i>{motivo} · {agora():%d/%m %H:%M} BRT</i>")
+    partes += ["", f"<i>{motivo} · {agora():%d/%m %H:%M} BRT</i>"]
     return "\n".join(partes)
 
 
@@ -365,6 +254,15 @@ def enviar_telegram(texto: str, dry_run: bool) -> None:
 
 # --------------------------------------------------------------------------- #
 
+def coletar(cfg: dict, proxy: str | None) -> list[Resultado]:
+    resultados: list[Resultado] = []
+    for destino in cfg["destinos"]:
+        resultados.append(buscar_google(cfg, destino, proxy, log))
+    for destino in cfg.get("destinos_vaidepromo", []):
+        resultados.append(buscar_vaidepromo(cfg, destino, log))
+    return resultados
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Monitor de passagens FLN <-> Rio")
     ap.add_argument("--force", action="store_true", help="envia mensagem mesmo sem promocao")
@@ -378,16 +276,16 @@ def main() -> int:
     proxy = os.environ.get("PROXY_URL") or None
     ESTADO.mkdir(exist_ok=True)
 
-    log(f"Buscando {cfg['origem']} -> {cfg['destinos']} | {cfg['data_ida']} / {cfg['data_volta']}")
-    resultados = [varrer_destino(cfg, d, proxy) for d in cfg["destinos"]]
+    log(f"Buscando {cfg['origem']} -> Rio | {cfg['data_ida']} / {cfg['data_volta']}")
+    resultados = coletar(cfg, proxy)
     gravar_historico(resultados)
 
     pisos = [r.piso for r in resultados if r.piso is not None]
     if not pisos:
-        log("Nenhum destino respondeu — possível bloqueio do Google ou mudança no site.")
+        log("Nenhuma fonte respondeu — possível bloqueio ou mudança nos sites.")
         enviar_telegram(
-            "⚠️ <b>Monitor de voos falhou</b>\nNenhum destino respondeu nesta rodada. "
-            "Pode ser bloqueio do IP do runner ou mudança no Google Flights.\n"
+            "⚠️ <b>Monitor de voos falhou</b>\nNenhuma fonte respondeu nesta rodada. "
+            "Pode ser bloqueio do IP do runner ou mudança no Google Flights / Vai de Promo.\n"
             f"<i>{agora():%d/%m %H:%M} BRT</i>",
             args.dry_run,
         )
