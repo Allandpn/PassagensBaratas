@@ -47,6 +47,19 @@ NOMES = {
 }
 
 
+def carregar_env() -> None:
+    """Le o .env em execucao local. No GitHub Actions as vars ja vem do ambiente."""
+    arquivo = RAIZ / ".env"
+    if not arquivo.exists():
+        return
+    for linha in arquivo.read_text(encoding="utf-8").splitlines():
+        linha = linha.strip()
+        if not linha or linha.startswith("#") or "=" not in linha:
+            continue
+        chave, valor = linha.split("=", 1)
+        os.environ.setdefault(chave.strip(), valor.strip())
+
+
 def agora() -> datetime:
     return datetime.now(BRT)
 
@@ -360,6 +373,7 @@ def main() -> int:
     ap.add_argument("--config", default=str(RAIZ / "config.json"))
     args = ap.parse_args()
 
+    carregar_env()
     cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
     proxy = os.environ.get("PROXY_URL") or None
     ESTADO.mkdir(exist_ok=True)

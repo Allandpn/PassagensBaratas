@@ -108,6 +108,9 @@ python monitor.py --force       # envia mesmo sem promoção
 python monitor.py --resumo      # resumo com histórico
 ```
 
+Localmente ele lê as credenciais do arquivo `.env` (copie de `.env.example`).
+Esse arquivo está no `.gitignore` e nunca vai para o repositório.
+
 ## Histórico
 
 Cada execução acrescenta uma linha em `state/historico.jsonl` e o workflow
