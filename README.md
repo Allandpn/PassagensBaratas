@@ -1,12 +1,75 @@
 # Monitor de passagens — Florianópolis ⇄ Rio de Janeiro
 
 Roda de madrugada na nuvem (GitHub Actions), varre o Google Flights e o Vai de
-Promo, e manda um alerta no Telegram quando a ida e volta cai para a faixa que
-você quer.
+Promo numa **janela de datas**, e manda um alerta no Telegram quando a ida e
+volta cai para a faixa de preço que você quer.
 
 | Trecho | Datas | Alvo |
 |---|---|---|
-| FLN ⇄ RIO (GIG + SDU), 1 pessoa, econômica | 31/10/2026 → 22/11/2026 | 🔥🔥 < R$ 800 · 🔥 R$ 800–900 · ⚠️ R$ 900–1000 |
+| FLN ⇄ RIO (GIG + SDU), 1 pessoa, econômica | ida 31/10/2026 · volta 22/11 a 28/11/2026 | 🔥🔥 < R$ 800 · 🔥 R$ 800–900 · ⚠️ R$ 900–1000 |
+
+## Janela de datas
+
+`data_ida` e `data_volta` aceitam três formatos. Cada combinação (ida × volta)
+vira uma busca em cada fonte, então a janela é o que mais pesa no tempo da
+rodada.
+
+```json
+"data_ida":   "2026-10-31",                              // uma data
+"data_volta": { "de": "2026-11-22", "ate": "2026-11-28" }, // intervalo, dia a dia
+"data_volta": ["2026-11-22", "2026-11-28"]                 // só essas duas
+```
+
+Combinações com volta anterior à ida são descartadas sozinhas, e
+`max_combinacoes_datas` (padrão 12) é o freio: se a janela pedir mais que isso,
+o monitor corta e avisa no log em vez de estourar o runner.
+
+Vale a pena: na primeira execução com a janela 22–28/11, a volta em **23/11
+saiu R$ 288 mais barata** que a 22/11 que estava fixa antes. A mensagem traz o
+piso de cada data de volta justamente para responder "vale esticar a viagem?":
+
+```
+━━ Piso por data de volta ━━
+22/11 · R$ 1.255
+23/11 · R$ 967 ⭐
+```
+
+## Bases de preço — qual número é o alerta
+
+O Vai de Promo devolve **três valores para a mesma tarifa**, e a tela do site
+mostra o primeiro em destaque ("R$ 966,61 no PIX"):
+
+| Campo da API | Nome aqui | O que é na tela do site |
+|---|---|---|
+| `fare` | `tarifa` | "Adultos (1x)" — o número grande, "no PIX" |
+| `amount` | `com_taxas` | tarifa + taxa de embarque |
+| `total` | `total` | + taxa de serviço (~10%) — o "Preço total" |
+
+O Google Flights entrega **um número só**, que já inclui taxa de embarque e não
+tem taxa de serviço: equivale ao `com_taxas`.
+
+Confundir os três é o erro fácil — comparar a tarifa de uma fonte com o total
+da outra faz o Vai de Promo parecer 30% mais barato do que é. Por isso:
+
+- toda oferta carrega os três valores, e a mensagem os mostra lado a lado:
+
+  ```
+  R$ 967 — LATAM · 1 conexão
+     FLN-GRU-SDU · sai 31/10 05:25 · chega 31/10 15:55
+     tarifa R$ 967 · c/ taxas R$ 1.148 · total R$ 1.245
+  ```
+
+- `"base_preco"` no config escolhe qual deles dispara o alerta, e a mensagem
+  diz explicitamente qual está valendo:
+
+  | Valor | Alerta compara | Quando usar |
+  |---|---|---|
+  | `"tarifa"` | o número "no PIX" | **padrão** — é o que você vê no site e o que seus alvos de 800/900/1000 refletem |
+  | `"com_taxas"` | tarifa + embarque | comparação justa entre as duas fontes |
+  | `"total"` | tudo, com taxa de serviço | o que sai do bolso |
+
+  Com `"tarifa"`, lembre que o Google não separa taxa de embarque: o número
+  dele entra na comparação já com taxas, então o Google aparece penalizado.
 
 ## Fontes
 
@@ -34,18 +97,24 @@ Mesma API que o buscador deles usa no navegador, em três endpoints:
 GET site.aereo.vaidepromo.com.br/api/air/providers/FLN/GIG/261031/
     → [{"code":"AD",...},{"code":"G3",...},{"code":"LA",...}]
 
-GET flights.vaidepromo.com.br/api/search/FLNGIG261031-GIGFLN261122/1/0/0/Y/G3
+GET flights.vaidepromo.com.br/api/search/FLNGIG261031-GIGFLN261123/1/0/0/Y/G3
     → {"prices":[...], "recommendations":[...], "itineraries":[[ida],[volta]]}
 ```
 
-O token de ida e volta usa **hífen** entre os trechos (`FLNGIG261031-GIGFLN261122`);
+O token de ida e volta usa **hífen** entre os trechos (`FLNGIG261031-GIGFLN261123`);
 sem ele a API devolve HTTP 500. Permitido pelo `robots.txt` deles — só
 `/redirect/`, `/safearea/` e as páginas de pagamento são `Disallow`.
 
-Traz preço já com taxas e costuma listar **voo direto** que o Google não mostra
-(ex.: Gol 1963 FLN→GIG sem escala). Em compensação sai mais caro: no mesmo
-instante, R$ 1.666 contra R$ 1.306 do Google. Ter as duas fontes é justamente
-o ponto — cada uma pega promoção que a outra perde.
+Duas economias importam na janela de datas:
+
+- a **lista de companhias** depende só de origem/destino/ida, não da volta —
+  é buscada uma vez por destino e reaproveitada nas 7 datas;
+- a lista vem com **repetições** (`I8` três vezes, `WB` e `TS` duas) que diferem
+  apenas no `mileage_carrier` e geram a mesma URL de busca. Deduplicando,
+  10 entradas viram 6 requisições.
+
+Traz voo direto que o Google não lista (ex.: Gol 1963 FLN→GIG sem escala) e é
+onde aparecem as tarifas mais baixas quando há promo.
 
 ### Skyscanner — fora, de propósito
 
@@ -99,7 +168,7 @@ No repositório: **Settings → Secrets and variables → Actions → New reposi
 **4. Testar**
 
 Aba **Actions → Monitor de voos FLN <-> Rio → Run workflow**. Deixe
-"Mandar mensagem mesmo sem promoção" marcado — deve chegar um Telegram em ~2 min.
+"Mandar mensagem mesmo sem promoção" marcado — deve chegar um Telegram em ~10 min.
 
 ## Horários
 
@@ -123,24 +192,38 @@ O cron do GitHub pode atrasar alguns minutos em horário de pico. É esperado.
 | Piso ≥ R$ 1.000 | ❌ (só entra no resumo do meio-dia) |
 | Nenhuma fonte respondeu | ⚠️ avisa que o monitor quebrou |
 
+O piso é o menor preço de **toda a janela** — se a promoção está só na volta do
+dia 26, o alerta dispara mesmo assim e a mensagem diz qual data é.
+
 ## Ajustes
 
 Tudo em `config.json`:
 
 ```json
-"alvos":          { "jackpot": 800, "alerta": 900, "aviso": 1000 },
-"degraus_preco":  [800, 900, 1000, 1200],
-"antispam_horas": 12
+"data_volta":            { "de": "2026-11-22", "ate": "2026-11-28" },
+"max_combinacoes_datas": 12,
+"base_preco":            "tarifa",
+"alvos":                 { "jackpot": 800, "alerta": 900, "aviso": 1000 },
+"degraus_preco":         [800, 900, 1000, 1200],
+"antispam_horas":        12
 ```
 
+- **Esticar a janela**: mude o `"ate"`. Cada dia a mais é +1 busca no Google
+  por destino e +1 no Vai de Promo — conte ~50 s por dia extra.
+- **Janela na ida também**: `"data_ida": {"de": "2026-10-30", "ate": "2026-11-01"}`.
+  Cuidado: multiplica, não soma — 3 idas × 7 voltas = 21 combinações, e o teto
+  de 12 corta o excesso.
+- **Alertar por outro número**: `"base_preco"` entre `"tarifa"`, `"com_taxas"`
+  e `"total"` (ver *Bases de preço*).
 - Quer ser avisado até R$ 1.200? Troque `"aviso": 1000` por `1200` e inclua
   `1200` nos degraus.
-- Datas flexíveis: mude `data_ida` / `data_volta`.
 - Menos consultas por rodada: deixe `"destinos": ["RIO"]` (o código `RIO` já
   cobre Galeão e Santos Dumont; GIG e SDU separados só melhoram a cobertura).
 - `"destinos"` são as consultas no Google; `"destinos_vaidepromo"` as do Vai de
   Promo, que não aceita código de cidade — só aeroporto (`GIG`, `SDU`).
   Deixe `"destinos_vaidepromo": []` para desligar essa fonte.
+- `"nomes"` acrescenta rótulos amigáveis de aeroporto na mensagem
+  (ex.: `{"CGH": "São Paulo / Congonhas"}`).
 
 ## Rodar na mão
 
@@ -148,6 +231,13 @@ Tudo em `config.json`:
 python monitor.py --dry-run     # imprime, não envia
 python monitor.py --force       # envia mesmo sem promoção
 python monitor.py --resumo      # resumo com histórico
+python teste_logica.py          # 51 testes offline, sem rede
+```
+
+Para experimentar uma janela diferente sem mexer no config de produção:
+
+```bash
+python monitor.py --config meu_teste.json --dry-run --force
 ```
 
 Localmente ele lê as credenciais do arquivo `.env` (copie de `.env.example`).
@@ -156,14 +246,22 @@ Esse arquivo está no `.gitignore` e nunca vai para o repositório.
 ## Histórico
 
 Cada execução acrescenta uma linha em `state/historico.jsonl` e o workflow
-faz commit disso. Com o tempo dá para ver a curva de preço da rota:
+faz commit disso. Os pisos são indexados por destino **e data de volta**, e
+`melhor` guarda a combinação vencedora com as três bases de preço:
 
 ```json
-{"quando": "2026-09-15T19:30-03:00",
- "pisos": {"Google Flights": {"RIO": 1306, "GIG": 1427, "SDU": 1306},
-           "Vai de Promo":  {"GIG": 1666, "SDU": 1694}},
+{"quando": "2026-09-16T09:32-03:00",
+ "base": "tarifa",
+ "pisos": {"Google Flights": {"GIG 22/11": 1255, "GIG 23/11": 1255},
+           "Vai de Promo":  {"SDU 22/11": 1351, "SDU 23/11": 967}},
+ "melhor": {"preco": 967, "tarifa": 967, "com_taxas": 1148, "total": 1245,
+            "fonte": "Vai de Promo", "destino": "SDU",
+            "ida": "2026-10-31", "volta": "2026-11-23"},
  "erros": {}}
 ```
+
+As linhas antigas (sem data no rótulo) continuam sendo lidas nas estatísticas
+de 30 dias.
 
 ## Limitações conhecidas
 
@@ -174,10 +272,15 @@ faz commit disso. Com o tempo dá para ver a curva de preço da rota:
   Como são duas fontes independentes, uma quebrar não derruba o monitor.
 - **Bloqueio de IP**: runners do GitHub usam IPs de datacenter. Até hoje funciona,
   mas se começar a falhar, configure o secret `PROXY_URL` com um proxy residencial.
-- **Volume**: ~23 requisições por execução (~2,5 min), 5 execuções por dia. É
-  volume de uso pessoal; não aumente a frequência sem necessidade.
-- **Preço mostrado é o total ida + volta** da tarifa econômica. O itinerário
-  detalhado na mensagem é o da **ida** — o Google só entrega a volta depois que
+- **Volume**: com a janela de 7 voltas são ~150 requisições por execução
+  (medido: 9 min 38 s), contra ~23 (~2,5 min) da versão de data fixa. O workflow tem
+  `timeout-minutes: 45`. É volume de uso pessoal; não aumente a frequência
+  junto com a janela.
+- **Bases de preço**: o Google não separa tarifa de taxa de embarque, então com
+  `"base_preco": "tarifa"` as duas fontes não estão em pé de igualdade — o
+  número do Google já vem com taxas. A decomposição na mensagem existe para
+  você conferir antes de comprar.
+- **O itinerário detalhado é o da ida** — o Google só entrega a volta depois que
   você escolhe o voo de ida. Bagagem despachada não está incluída.
 - **GitHub desliga cron** de repositórios sem atividade por 60 dias. Como o
   workflow faz commit do histórico, isso não deve acontecer.

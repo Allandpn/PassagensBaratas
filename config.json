@@ -2,12 +2,17 @@
   "origem": "FLN",
   "destinos": ["RIO", "GIG", "SDU"],
   "destinos_vaidepromo": ["GIG", "SDU"],
+
   "data_ida": "2026-10-31",
-  "data_volta": "2026-11-22",
+  "data_volta": { "de": "2026-11-22", "ate": "2026-11-28" },
+  "max_combinacoes_datas": 12,
+
   "adultos": 1,
   "classe": "economy",
   "moeda": "BRL",
   "idioma": "pt-BR",
+
+  "base_preco": "tarifa",
 
   "alvos": {
     "jackpot": 800,
