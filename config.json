@@ -1,11 +1,31 @@
 {
   "origem": "FLN",
-  "destinos": ["RIO", "GIG", "SDU"],
-  "destinos_vaidepromo": ["GIG", "SDU"],
+  "destinos": ["THE", "PHB"],
+  "destinos_vaidepromo": ["THE", "PHB"],
+  "titulo_destino": "Piauí",
 
-  "data_ida": "2026-10-31",
-  "data_volta": { "de": "2026-11-22", "ate": "2026-11-28" },
-  "max_combinacoes_datas": 12,
+  "nomes": {
+    "FLN": "Florianópolis",
+    "THE": "Teresina",
+    "PHB": "Parnaiba"
+  },
+
+  "periodos": [
+    {
+      "ida": "2026-11-05",
+      "volta": { "de": "2026-11-10", "ate": "2026-11-20" }
+    },
+    {
+      "ida": "2026-10-31",
+      "volta": { "de": "2026-11-07", "ate": "2026-11-20" }
+    },
+    {
+      "ida": ["2026-11-20", "2026-11-14"],
+      "volta": ["2026-12-05", "2027-11-28"]
+    }
+  ],
+
+  "max_combinacoes_datas": 30,
 
   "adultos": 1,
   "classe": "economy",
@@ -15,12 +35,12 @@
   "base_preco": "tarifa",
 
   "alvos": {
-    "jackpot": 800,
-    "alerta": 900,
-    "aviso": 1000
+    "jackpot": 1400,
+    "alerta": 1600,
+    "aviso": 1700
   },
 
-  "degraus_preco": [800, 900, 1000, 1200],
+  "degraus_preco": [800, 900, 1000, 1200, 1500, 1700],
 
   "antispam_horas": 12,
   "pausa_entre_buscas_seg": 2.5,

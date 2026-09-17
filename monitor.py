@@ -39,12 +39,6 @@ BRT = timezone(timedelta(hours=-3))
 if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-NOMES = {
-    "FLN": "Florianópolis",
-    "RIO": "Rio (todos os aeroportos)",
-    "GIG": "Rio / Galeão",
-    "SDU": "Rio / Santos Dumont",
-}
 
 ROTULO_BASE = {
     "tarifa": "tarifa por adulto (o valor grande do Vai de Promo, sem taxas)",
@@ -103,13 +97,25 @@ def expandir_datas(valor) -> list[str]:
 
 
 def combinacoes(cfg: dict) -> list[tuple[str, str]]:
-    """Pares (ida, volta) da janela. Descarta volta anterior a ida e respeita
-    o teto de combinacoes — a rodada cresce no produto das duas janelas."""
-    idas = expandir_datas(cfg["data_ida"])
-    voltas = expandir_datas(cfg["data_volta"])
-    pares = [(i, v) for i in idas for v in voltas if v >= i]
+    """Gera pares (ida, volta) unindo todos os períodos configurados."""
+    pares = []
+
+    # Retrocompatibilidade: se ainda tiver data_ida/data_volta antigo, converte
+    periodos = cfg.get("periodos")
+    if not periodos:
+        periodos = [{"ida": cfg["data_ida"], "volta": cfg["data_volta"]}]
+
+    for p in periodos:
+        idas = expandir_datas(p["ida"])
+        voltas = expandir_datas(p["volta"])
+        for i in idas:
+            for v in voltas:
+                # Garante que a volta não é antes da ida e evita duplicatas
+                if v >= i and (i, v) not in pares:
+                    pares.append((i, v))
+
     if not pares:
-        raise ValueError("nenhuma combinação válida: toda data de volta é anterior à de ida")
+        raise ValueError("nenhuma combinação válida encontrada nos períodos")
 
     teto = cfg.get("max_combinacoes_datas", 12)
     if len(pares) > teto:
@@ -270,10 +276,16 @@ def pisos_validos(registros: list[dict]) -> list[int]:
 # Mensagem
 # --------------------------------------------------------------------------- #
 
-def _linha_datas(cfg: dict) -> str:
-    idas = expandir_datas(cfg["data_ida"])
-    voltas = expandir_datas(cfg["data_volta"])
+def _linha_datas(pares: list[tuple[str, str]], cfg: dict) -> str:
+    # Extrai os meses/anos únicos e formata bonitinho
+    idas = sorted(list({i for i, v in pares}))
+    voltas = sorted(list({v for i, v in pares}))
 
+    # Se os períodos forem muitos e distantes, um resumo genérico fica melhor
+    if len(cfg.get("periodos", [])) > 1:
+        return f"📅 {len(pares)} combinações em {len(cfg['periodos'])} períodos"
+
+    # Se for só 1 período, mantém a lógica visual antiga
     def faixa(datas: list[str]) -> str:
         if len(datas) == 1:
             return ddmm(datas[0])
@@ -285,12 +297,12 @@ def _linha_datas(cfg: dict) -> str:
 def montar_mensagem(cfg: dict, resultados: list[Resultado], faixa: str,
                     piso: int | None, motivo: str, resumo: bool) -> str:
     base = cfg.get("base_preco", BASE_PADRAO)
-    nomes = {**NOMES, **cfg.get("nomes", {})}
+    nomes = cfg.get("nomes", {})
 
     partes = [
         "<b>" + CABECALHO[faixa].format(**cfg["alvos"]) + "</b>",
-        f"✈️ {nomes.get(cfg['origem'], cfg['origem'])} → Rio de Janeiro · ida e volta",
-        _linha_datas(cfg) + f" · {cfg['adultos']} pessoa · econômica",
+        f"✈️ {nomes.get(cfg['origem'], cfg['origem'])} → {cfg.get('titulo_destino', 'Destino')} · ida e volta",
+        _linha_datas(combinacoes(cfg), cfg) + f" · {cfg['adultos']} pessoa · econômica",
         f"<i>Alerta pela {ROTULO_BASE.get(base, base)}.</i>",
     ]
 
@@ -426,7 +438,7 @@ def main() -> int:
     ESTADO.mkdir(exist_ok=True)
 
     pares = combinacoes(cfg)
-    log(f"Buscando {cfg['origem']} -> Rio | {len(pares)} combinações de data "
+    log(f"Buscando {cfg['origem']} -> {cfg.get('titulo_destino', 'Destino')} | {len(pares)} combinações de data "
         f"({pares[0][0]} → {pares[0][1]} ... {pares[-1][0]} → {pares[-1][1]}) "
         f"| base de preço: {cfg.get('base_preco', BASE_PADRAO)}")
     resultados = coletar(cfg, proxy)

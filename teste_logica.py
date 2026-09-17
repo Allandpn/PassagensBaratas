@@ -11,6 +11,14 @@ import monitor as m
 CFG = json.loads((Path(__file__).parent / "config.json").read_text(encoding="utf-8"))
 falhas = []
 
+# Base de configuração limpa para injetarmos os períodos dinamicamente nos testes
+CFG_BASE = {k: v for k, v in CFG.items() if k not in ("data_ida", "data_volta", "periodos")}
+
+# Configuração padrão de teste simulando 1 ida x 7 voltas
+cfg_1x7 = {
+    **CFG_BASE,
+    "periodos": [{"ida": "2026-10-31", "volta": {"de": "2026-11-22", "ate": "2026-11-28"}}]
+}
 
 def check(nome, obtido, esperado):
     ok = obtido == esperado
@@ -18,13 +26,11 @@ def check(nome, obtido, esperado):
     if not ok:
         falhas.append(f"{nome}: esperado {esperado!r}, veio {obtido!r}")
 
-
 def oferta_vdp(preco=966, tarifa=966, com_taxas=1148, total=1245, volta="2026-11-23"):
     return m.Oferta(fonte=m.VAIDEPROMO, preco=preco, tarifa=tarifa, com_taxas=com_taxas,
                     total=total, companhia="LATAM", rota="FLN-GRU-SDU", partida="31/10 15:40",
                     chegada="31/10 22:25", paradas=1, destino="SDU",
                     data_ida="2026-10-31", data_volta=volta)
-
 
 print("Janela de datas:")
 check("data única (string)", m.expandir_datas("2026-11-22"), ["2026-11-22"])
@@ -39,18 +45,27 @@ except ValueError:
     check("intervalo invertido é rejeitado", True, True)
 
 print("\nCombinações:")
-check("config atual (1 ida x 7 voltas)", len(m.combinacoes(CFG)), 7)
-check("primeira combinação", m.combinacoes(CFG)[0], ("2026-10-31", "2026-11-22"))
-check("última combinação", m.combinacoes(CFG)[-1], ("2026-10-31", "2026-11-28"))
+check("config 1 ida x 7 voltas", len(m.combinacoes(cfg_1x7)), 7)
+check("primeira combinação", m.combinacoes(cfg_1x7)[0], ("2026-10-31", "2026-11-22"))
+check("última combinação", m.combinacoes(cfg_1x7)[-1], ("2026-10-31", "2026-11-28"))
+
 check("volta anterior à ida é descartada",
-      m.combinacoes({**CFG, "data_ida": "2026-11-25",
-                     "data_volta": {"de": "2026-11-22", "ate": "2026-11-28"}}),
+      m.combinacoes({**CFG_BASE, "periodos": [{"ida": "2026-11-25", "volta": {"de": "2026-11-22", "ate": "2026-11-28"}}]}),
       [("2026-11-25", "2026-11-25"), ("2026-11-25", "2026-11-26"),
        ("2026-11-25", "2026-11-27"), ("2026-11-25", "2026-11-28")])
-check("teto de combinações corta", len(m.combinacoes({**CFG, "max_combinacoes_datas": 3})), 3)
+
+check("teto de combinações corta", len(m.combinacoes({**cfg_1x7, "max_combinacoes_datas": 3})), 3)
+
 check("ida também pode ser janela",
-      len(m.combinacoes({**CFG, "data_ida": {"de": "2026-10-30", "ate": "2026-10-31"},
+      len(m.combinacoes({**CFG_BASE, "periodos": [{"ida": {"de": "2026-10-30", "ate": "2026-10-31"},
+                                                   "volta": {"de": "2026-11-22", "ate": "2026-11-28"}}],
                          "max_combinacoes_datas": 99})), 14)
+
+check("múltiplos períodos são somados",
+      len(m.combinacoes({**CFG_BASE, "periodos": [
+          {"ida": "2026-10-31", "volta": "2026-11-22"},
+          {"ida": "2026-12-20", "volta": "2026-12-25"}
+      ]})), 2)
 
 print("\nBases de preço (tarifa 966 / com taxas 1148 / total 1245):")
 for base, esperado in [("tarifa", 966), ("com_taxas", 1148), ("total", 1245)]:
@@ -72,17 +87,17 @@ check("Google omite a decomposição (valores iguais)", "tarifa R$" in linha_goo
 print("\nFaixas:")
 for preco, esperado in [(650, "jackpot"), (799, "jackpot"), (800, "alerta"), (899, "alerta"),
                         (900, "aviso"), (999, "aviso"), (1000, "acima"), (1306, "acima")]:
-    check(f"R$ {preco}", m.classificar(preco, CFG["alvos"]), esperado)
+    check(f"R$ {preco}", m.classificar(preco, cfg_1x7["alvos"]), esperado)
 
 print("\nAnti-spam:")
 m.ULTIMO_ALERTA = Path(__file__).parent / "state" / "_teste_alerta.json"
 m.ULTIMO_ALERTA.unlink(missing_ok=True)
-check("acima do alvo nao alerta", m.deve_alertar(1306, "acima", CFG)[0], False)
-check("primeiro alerta", m.deve_alertar(950, "aviso", CFG)[0], True)
+check("acima do alvo nao alerta", m.deve_alertar(1306, "acima", cfg_1x7)[0], False)
+check("primeiro alerta", m.deve_alertar(950, "aviso", cfg_1x7)[0], True)
 m.gravar_ultimo_alerta(950, "aviso")
-check("mesmo preco repetido", m.deve_alertar(950, "aviso", CFG)[0], False)
-check("preco caiu", m.deve_alertar(820, "alerta", CFG)[0], True)
-check("preco subiu dentro do alvo", m.deve_alertar(980, "aviso", CFG)[0], False)
+check("mesmo preco repetido", m.deve_alertar(950, "aviso", cfg_1x7)[0], False)
+check("preco caiu", m.deve_alertar(820, "alerta", cfg_1x7)[0], True)
+check("preco subiu dentro do alvo", m.deve_alertar(980, "aviso", cfg_1x7)[0], False)
 m.ULTIMO_ALERTA.unlink(missing_ok=True)
 
 print("\nMensagens (as 4 faixas):")
@@ -99,11 +114,11 @@ res = [
                 url="https://google"),
 ]
 for faixa in ("jackpot", "alerta", "aviso", "acima"):
-    texto = m.montar_mensagem(CFG, res, faixa, 966, "teste", resumo=False)
+    texto = m.montar_mensagem(cfg_1x7, res, faixa, 966, "teste", resumo=False)
     check(f"faixa {faixa} renderiza", bool(texto) and "{" not in texto.split("\n")[0], True)
     print("      " + m._sem_tags(texto).split("\n")[0])
 
-msg = m._sem_tags(m.montar_mensagem(CFG, res, "alerta", 966, "teste", resumo=False))
+msg = m._sem_tags(m.montar_mensagem(cfg_1x7, res, "alerta", 966, "teste", resumo=False))
 check("mensagem anuncia a janela de volta", "volta 22/11 a 28/11 (7 datas)" in msg, True)
 check("mensagem diz qual base dispara o alerta", "tarifa por adulto" in msg, True)
 check("mensagem destaca a melhor combinação", "31/10 → 23/11" in msg, True)
@@ -113,7 +128,11 @@ check("piso por data de volta", m.pisos_por_volta(res),
       {"2026-11-22": 1255, "2026-11-23": 966})
 check("sem oferta nenhuma ainda renderiza",
       "Nenhuma oferta retornada" in m._sem_tags(
-          m.montar_mensagem(CFG, [], "acima", None, "teste", resumo=False)), True)
+          m.montar_mensagem(cfg_1x7, [], "acima", None, "teste", resumo=False)), True)
+
+cfg_multi = {**CFG_BASE, "periodos": [{"ida": "2026-10-31", "volta": "2026-11-22"}, {"ida": "2026-12-20", "volta": "2026-12-25"}]}
+msg_multi = m._sem_tags(m.montar_mensagem(cfg_multi, res, "alerta", 966, "teste", resumo=False))
+check("mensagem agrega múltiplos períodos", "2 combinações em 2 períodos" in msg_multi, True)
 
 print("\nHistorico (aceita formato antigo e novo):")
 check("formato antigo", m.pisos_validos([{"pisos": {"RIO": 1306, "GIG": None}}]), [1306])
@@ -123,16 +142,16 @@ check("formato novo", sorted(m.pisos_validos(
 check("rótulo do resultado inclui a data de volta", res[0].rotulo, "SDU 23/11")
 
 print("\nLinks das fontes:")
-url_google = f._query_google(CFG, "RIO", "2026-10-31", "2026-11-28", None).url()
+url_google = f._query_google(cfg_1x7, "RIO", "2026-10-31", "2026-11-28", None).url()
 check("google", url_google.startswith("https://www.google.com/travel/flights/search?tfs="), True)
 print("      " + url_google)
 
 check("token vaidepromo ida e volta",
-      f._token_vdp(CFG, "GIG", "2026-10-31", "2026-11-22"), "FLNGIG261031-GIGFLN261122")
+      f._token_vdp(cfg_1x7, "GIG", "2026-10-31", "2026-11-22"), "FLNGIG261031-GIGFLN261122")
 check("token acompanha a data da janela",
-      f._token_vdp(CFG, "GIG", "2026-10-31", "2026-11-28"), "FLNGIG261031-GIGFLN261128")
-url_vdp = f.VDP_PAGINA.format(token=f._token_vdp(CFG, "GIG", "2026-10-31", "2026-11-23"),
-                              ad=CFG["adultos"])
+      f._token_vdp(cfg_1x7, "GIG", "2026-10-31", "2026-11-28"), "FLNGIG261031-GIGFLN261128")
+url_vdp = f.VDP_PAGINA.format(token=f._token_vdp(cfg_1x7, "GIG", "2026-10-31", "2026-11-23"),
+                              ad=cfg_1x7["adultos"])
 check("vaidepromo", url_vdp.startswith("https://www.vaidepromo.com.br/passagens-aereas/"), True)
 print("      " + url_vdp)
 
@@ -150,7 +169,7 @@ providers = [
     {"code": "TS", "endpoint": "https://ts.flights.vaidepromo.com.br", "mileage_carrier": "LA"},
     {"code": "XX", "endpoint": None},
 ]
-urls = f.urls_de_busca(CFG, providers, "FLNGIG261031-GIGFLN261123")
+urls = f.urls_de_busca(cfg_1x7, providers, "FLNGIG261031-GIGFLN261123")
 check("10 entradas viram 6 buscas", len(urls), 6)
 check("sem endpoint é ignorado", "XX" in urls, False)
 
