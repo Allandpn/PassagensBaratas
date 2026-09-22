@@ -13,10 +13,6 @@ Vai de Promo
     paginas de pagamento sao Disallow. Traz voo direto que o Google nao lista
     e separa o preco em tres numeros (ver "Bases de preco" abaixo).
 
-Skyscanner ficou de fora de proposito: o robots.txt deles poe Disallow em
-/transporte/* (a busca de voos), /dataservices/* e /skippy_api/* (as APIs
-internas de preco) para User-agent: *. Ou seja, pedem explicitamente para
-bots nao automatizarem a busca.
 
 Bases de preco
     O Vai de Promo devolve tres valores para a mesma tarifa, e a tela do site

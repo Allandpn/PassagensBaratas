@@ -5,11 +5,11 @@ on:
   # monitorar. Para religar, basta descomentar o bloco schedule abaixo.
   schedule:
    # Cron do GitHub e sempre em UTC. Brasilia = UTC-3.
-   - cron: "0 4 * * *"    # 01:00 BRT
-   - cron: "30 5 * * *"   # 02:30 BRT
-   - cron: "0 7 * * *"    # 04:00 BRT
-   - cron: "30 8 * * *"   # 05:30 BRT
-   - cron: "0 15 * * *"   # 12:00 BRT - resumo diario
+   - cron: "0 22 * * *"    # 01:00 BRT
+#   - cron: "30 5 * * *"   # 02:30 BRT
+   - cron: "0 4 * * *"    # 04:00 BRT
+#   - cron: "30 8 * * *"   # 05:30 BRT
+   - cron: "0 7 * * *"   # 12:00 BRT - resumo diario
   workflow_dispatch:
     inputs:
       forcar:
