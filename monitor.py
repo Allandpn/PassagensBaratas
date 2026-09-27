@@ -431,11 +431,19 @@ def enviar_ntfy(titulo: str, texto: str, dry_run: bool) -> None:
 def notificar(texto_html: str, dry_run: bool) -> None:
     """Manda a mesma mensagem no Telegram (que renderiza o HTML) e no ntfy
     (texto puro — o app não interpreta as tags). O título do ntfy é a
-    primeira linha da mensagem, o cabeçalho com o emoji."""
+    primeira linha da mensagem, o cabeçalho com o emoji.
+
+    O ntfy roda por fora de um try/except: e um canal extra, e um 429
+    (rate limit do ntfy.sh publico, ja visto ao vivo) ou qualquer outra
+    falha dele nao pode derrubar a execucao depois que o Telegram --
+    o canal principal -- ja saiu com sucesso."""
     enviar_telegram(texto_html, dry_run)
     texto_puro = _sem_tags(texto_html)
     titulo, _, corpo = texto_puro.partition("\n")
-    enviar_ntfy(titulo.strip(), corpo.strip() or titulo.strip(), dry_run)
+    try:
+        enviar_ntfy(titulo.strip(), corpo.strip() or titulo.strip(), dry_run)
+    except Exception as exc:
+        log(f"  [ntfy] ERRO {type(exc).__name__}: {exc} — Telegram já foi enviado, seguindo.")
 
 
 # --------------------------------------------------------------------------- #

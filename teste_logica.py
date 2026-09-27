@@ -277,5 +277,23 @@ if _ntfy_server_orig is None:
 else:
     os.environ["NTFY_SERVER"] = _ntfy_server_orig
 
+# Regressao real: um HTTP 429 (rate limit do ntfy.sh publico) no enviar_ntfy
+# nao pegava o proprio erro e derrubava o script inteiro com exit code 1,
+# mesmo com o Telegram (o canal principal) ja enviado com sucesso.
+telegram_chamado = {}
+enviar_telegram_original = m.enviar_telegram
+m.enviar_telegram = lambda texto, dry_run: telegram_chamado.update(chamado=True)
+m.enviar_ntfy = lambda titulo, texto, dry_run: (_ for _ in ()).throw(
+    RuntimeError("ntfy recusou a mensagem: HTTP 429"))
+try:
+    m.notificar("<b>Cabeçalho</b>\ncorpo", dry_run=False)
+    notificar_nao_quebrou = True
+except Exception:
+    notificar_nao_quebrou = False
+m.enviar_telegram = enviar_telegram_original
+m.enviar_ntfy = ntfy_original
+check("Telegram foi chamado antes do ntfy falhar", telegram_chamado.get("chamado"), True)
+check("falha no ntfy (ex.: HTTP 429) não derruba notificar()", notificar_nao_quebrou, True)
+
 print("\n" + ("TUDO OK" if not falhas else "FALHAS:\n  " + "\n  ".join(falhas)))
 sys.exit(1 if falhas else 0)
