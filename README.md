@@ -1,4 +1,4 @@
-# Monitor de passagens — Florianópolis ⇄ Rio de Janeiro
+# Monitor de passagens — Florianópolis ⇄ Piauí
 
 Roda de madrugada na nuvem (GitHub Actions), varre o Google Flights e o Vai de
 Promo numa **janela de datas**, e manda um alerta no Telegram quando a ida e
@@ -6,7 +6,11 @@ volta cai para a faixa de preço que você quer.
 
 | Trecho | Datas | Alvo |
 |---|---|---|
-| FLN ⇄ RIO (GIG + SDU), 1 pessoa, econômica | ida 31/10/2026 · volta 22/11 a 28/11/2026 | 🔥🔥 < R$ 800 · 🔥 R$ 800–900 · ⚠️ R$ 900–1000 |
+| FLN ⇄ THE + PHB (Piauí), 1 pessoa, econômica | ida 20/11 ou 23/11/2026 · volta 04/12 ou 07/12/2026 | 🔥🔥 < R$ 1.400 · 🔥 R$ 1.400–1.600 · ⚠️ R$ 1.600–1.700 |
+
+Os exemplos abaixo (datas, valores, trecho FLN-RIO) são das rodadas em que o
+recurso de janela de datas e bases de preço foi criado — mantidos porque
+ilustram o mecanismo, não o destino monitorado hoje.
 
 ## Janela de datas
 

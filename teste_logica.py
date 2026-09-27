@@ -85,9 +85,13 @@ linha_google = m.Oferta(fonte=m.GOOGLE, preco=1255, tarifa=1255, com_taxas=1255,
 check("Google omite a decomposição (valores iguais)", "tarifa R$" in linha_google, False)
 
 print("\nFaixas:")
+# Alvos fixos do teste: nao usar cfg_1x7["alvos"] aqui, pois vem do config.json
+# de producao e muda com o destino monitorado (ja causou falsa falha quando o
+# config trocou de Rio para Piaui).
+ALVOS_TESTE = {"jackpot": 800, "alerta": 900, "aviso": 1000}
 for preco, esperado in [(650, "jackpot"), (799, "jackpot"), (800, "alerta"), (899, "alerta"),
                         (900, "aviso"), (999, "aviso"), (1000, "acima"), (1306, "acima")]:
-    check(f"R$ {preco}", m.classificar(preco, cfg_1x7["alvos"]), esperado)
+    check(f"R$ {preco}", m.classificar(preco, ALVOS_TESTE), esperado)
 
 print("\nAnti-spam:")
 m.ULTIMO_ALERTA = Path(__file__).parent / "state" / "_teste_alerta.json"
