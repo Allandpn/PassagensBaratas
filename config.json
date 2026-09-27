@@ -2,12 +2,23 @@
   "origem": "FLN",
   "destinos": ["THE", "PHB"],
   "destinos_vaidepromo": ["THE", "PHB"],
+  "destinos_passagenspromo": ["THE", "PHB"],
+  "max_idas_passagenspromo": 3,
+  "timeout_pp_seg": 90,
   "titulo_destino": "Piauí",
 
   "nomes": {
     "FLN": "Florianópolis",
     "THE": "Teresina",
     "PHB": "Parnaiba"
+  },
+
+  "melhoresdestinos": {
+    "ativo": true,
+    "categorias": ["promocoes-passagens-aereas"],
+    "paginas": 1,
+    "termos_origem": ["florianópolis", "floripa", "FLN"],
+    "termos_destino": ["teresina", "parnaíba", "parnaiba", "piauí", "piaui", "THE", "PHB"]
   },
 
   "periodos": [

@@ -1,8 +1,10 @@
 # Monitor de passagens — Florianópolis ⇄ Piauí
 
-Roda de madrugada na nuvem (GitHub Actions), varre o Google Flights e o Vai de
-Promo numa **janela de datas**, e manda um alerta no Telegram quando a ida e
-volta cai para a faixa de preço que você quer.
+Roda de madrugada na nuvem (GitHub Actions), varre o Google Flights, o Vai de
+Promo e o Passagens Promo numa **janela de datas**, e manda um alerta no
+Telegram quando a ida e volta cai para a faixa de preço que você quer. De
+quebra, fica de olho no blog Melhores Destinos e avisa quando sai post de
+promoção citando as duas pontas da rota.
 
 | Trecho | Datas | Alvo |
 |---|---|---|
@@ -120,6 +122,61 @@ Duas economias importam na janela de datas:
 Traz voo direto que o Google não lista (ex.: Gol 1963 FLN→GIG sem escala) e é
 onde aparecem as tarifas mais baixas quando há promo.
 
+### Passagens Promo — API da OnerTravel
+
+A loja (`app.passagenspromo.com.br`) é um white-label da OnerTravel. O front
+fala com `serverless.api.onertravel.com` em três passos:
+
+```
+POST /api/flight/v1/search            {"departureStation":"FLN","arrivalStation":"THE",...}
+    → {"searchKey":"45e3e651-..."}
+POST /api/flight/v1/search/outbound   {"searchKey":...,"ordinationEnum":0}   ← idas, mais barata primeiro
+POST /api/flight/v1/search/inbound    {"searchKey":...,"flightKey":<ida>}    ← voltas daquela ida
+```
+
+- Aceita código de cidade (ex.: `RIO` traz Galeão e Santos Dumont numa busca
+  só); para aeroportos sem agregador de cidade, usa o código do aeroporto.
+- O site espera um websocket avisar que as companhias responderam; o monitor
+  apenas relê a lista de idas até a contagem parar de mudar.
+- **Ida e volta têm preço separado** e o ida e volta é a soma. A volta mais
+  barata depende da ida escolhida (LATAM R$ 561 de ida pedia R$ 951 de volta;
+  Gol R$ 578 de ida tinha volta de R$ 571), então o monitor testa a ida mais
+  barata de cada companhia/fornecedor (`max_idas_passagenspromo`, padrão 3).
+- A taxa de serviço vem embutida na tarifa: aqui `com_taxas` e `total` saem
+  iguais.
+- Sem o cabeçalho `ApplicationName` a API responde 200 com corpo vazio — o
+  monitor trata isso como erro e repete. Assim como no Vai de Promo, é preciso
+  impersonar o TLS de um navegador (`primp`): sem isso a API também responde
+  200 vazio.
+
+`robots.txt` do domínio: `Disallow:` vazio, tudo liberado.
+
+### Melhores Destinos — radar de posts
+
+Não é buscador, é blog: não existe "preço de 20/11 a 04/12" para consultar.
+Entra como radar. A cada rodada o monitor lê a listagem da categoria
+*Promoções de passagens aéreas* e separa os posts que citam **as duas pontas**
+da rota (só o nome da origem, ou só o do destino, pode aparecer em post sobre
+outra rota qualquer). Cada post novo gera um Telegram próprio, uma vez só — os
+ids já avisados ficam em `state/melhoresdestinos_vistos.json`:
+
+```
+📰 Melhores Destinos: post novo sobre Florianópolis ⇄ Piauí
+• Voos de Floripa para o Rio a partir de R$ 389 · a partir de R$ 389 (há 2 horas)
+```
+
+O resumo do meio-dia também lista os posts da rota que estão na página. Nada
+disso mexe no piso de preço nem no anti-spam dos alertas. Por padrão o
+`termos_destino` vem vazio (ver `fontes.MD_PADRAO`) — sem configurar os termos
+do destino atual em `config.json`, o radar não casa post nenhum, de propósito,
+para não gerar falso positivo.
+
+O `/wp-json/` deles responde sempre a mesma lista congelada (ignora busca,
+data e categoria) e o `/feed/` é `Disallow` no `robots.txt`, por isso a leitura
+é do HTML da categoria, que é liberado. Assim como as outras duas APIs não
+oficiais, a leitura só funciona impersonando o TLS de um navegador — com
+`curl` puro o site devolve 403 (WAF de fingerprint, não de IP).
+
 ### Skyscanner — fora, de propósito
 
 Não é dificuldade técnica. O `robots.txt` deles, no bloco `User-agent: *`, põe:
@@ -226,6 +283,16 @@ Tudo em `config.json`:
 - `"destinos"` são as consultas no Google; `"destinos_vaidepromo"` as do Vai de
   Promo, que não aceita código de cidade — só aeroporto (`GIG`, `SDU`).
   Deixe `"destinos_vaidepromo": []` para desligar essa fonte.
+- `"destinos_passagenspromo"` aceita cidade (ex.: `RIO`) ou aeroporto; `[]`
+  desliga a fonte. `"max_idas_passagenspromo"` (padrão 3) é quantas idas
+  diferentes o monitor testa por companhia/fornecedor antes de buscar a
+  volta de cada uma — subir esse número custa mais requisições e tempo.
+- `"melhoresdestinos"`: `"ativo": false` desliga o radar do blog;
+  `"termos_origem"` e `"termos_destino"` são as palavras que o post precisa
+  citar (sem diferença de acento ou maiúscula) — o padrão vem com
+  `termos_destino` vazio de propósito, então **é preciso configurar os termos
+  do destino atual** ou o radar nunca acha nada; `"paginas"` é quantas páginas
+  da categoria ler.
 - `"nomes"` acrescenta rótulos amigáveis de aeroporto na mensagem
   (ex.: `{"CGH": "São Paulo / Congonhas"}`).
 
@@ -235,7 +302,7 @@ Tudo em `config.json`:
 python monitor.py --dry-run     # imprime, não envia
 python monitor.py --force       # envia mesmo sem promoção
 python monitor.py --resumo      # resumo com histórico
-python teste_logica.py          # 51 testes offline, sem rede
+python teste_logica.py          # 74 testes offline, sem rede
 ```
 
 Para experimentar uma janela diferente sem mexer no config de produção:
@@ -270,12 +337,22 @@ de 30 dias.
 ## Limitações conhecidas
 
 - **Fontes não-oficiais**: o Google Flights é lido via [`fast-flights`](https://pypi.org/project/fast-flights/),
-  que reconstrói a requisição protobuf do site, e o Vai de Promo pela API JSON
-  do buscador deles. Nenhuma das duas é API contratada: se mudarem o formato,
-  quebra — o monitor detecta e manda um Telegram de falha em vez de ficar mudo.
-  Como são duas fontes independentes, uma quebrar não derruba o monitor.
+  que reconstrói a requisição protobuf do site, o Vai de Promo e o Passagens
+  Promo pelas APIs JSON dos próprios buscadores deles. Nenhuma é API
+  contratada: se mudarem o formato, quebra — o monitor detecta e manda um
+  Telegram de falha em vez de ficar mudo. O mesmo vale para a leitura do HTML
+  do Melhores Destinos. Como as fontes são independentes, uma quebrar não
+  derruba as outras; o blog, se falhar, só aparece no log.
 - **Bloqueio de IP**: runners do GitHub usam IPs de datacenter. Até hoje funciona,
   mas se começar a falhar, configure o secret `PROXY_URL` com um proxy residencial.
+- **Fingerprint TLS**: Vai de Promo, Passagens Promo e Melhores Destinos exigem
+  que a requisição *pareça* vir de um navegador (o monitor usa `primp` com
+  `impersonate="chrome_145"`); sem isso as três respondem 200 com corpo vazio
+  ou 403, mesmo de um IP comum. Não é bloqueio de datacenter como o do
+  Skyscanner — é só a marca d'água do TLS.
+- **Passagens Promo na conta**: ~6 requisições e ~40 s a mais por data de
+  volta (busca, 2–3 leituras da lista de idas, uma volta por companhia).
+  O blog é 1 requisição por página.
 - **Volume**: com a janela de 7 voltas são ~150 requisições por execução
   (medido: 9 min 38 s), contra ~23 (~2,5 min) da versão de data fixa. O workflow tem
   `timeout-minutes: 45`. É volume de uso pessoal; não aumente a frequência

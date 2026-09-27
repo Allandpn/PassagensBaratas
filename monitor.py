@@ -25,14 +25,16 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fontes import (
-    BASES, BASE_PADRAO, GOOGLE, VAIDEPROMO, Oferta, Resultado, buscar_google,
-    buscar_vaidepromo, listar_providers, reais,
+    BASES, BASE_PADRAO, FONTES_DE_PRECO, GOOGLE, MELHORESDESTINOS, VAIDEPROMO, Oferta, Post,
+    Resultado, buscar_google, buscar_melhoresdestinos, buscar_passagenspromo, buscar_vaidepromo,
+    listar_providers, reais,
 )
 
 RAIZ = Path(__file__).resolve().parent
 ESTADO = RAIZ / "state"
 HISTORICO = ESTADO / "historico.jsonl"
 ULTIMO_ALERTA = ESTADO / "ultimo_alerta.json"
+POSTS_VISTOS = ESTADO / "melhoresdestinos_vistos.json"
 BRT = timezone(timedelta(hours=-3))
 
 # O console do Windows abre em cp1252 e engasga nos acentos/emoji das mensagens.
@@ -295,7 +297,8 @@ def _linha_datas(pares: list[tuple[str, str]], cfg: dict) -> str:
 
 
 def montar_mensagem(cfg: dict, resultados: list[Resultado], faixa: str,
-                    piso: int | None, motivo: str, resumo: bool) -> str:
+                    piso: int | None, motivo: str, resumo: bool,
+                    posts: list[Post] | None = None) -> str:
     base = cfg.get("base_preco", BASE_PADRAO)
     nomes = cfg.get("nomes", {})
 
@@ -332,7 +335,7 @@ def montar_mensagem(cfg: dict, resultados: list[Resultado], faixa: str,
 
     # Piso de cada fonte, para ver quem esta mais barata nesta rodada.
     partes.append("")
-    for fonte in (GOOGLE, VAIDEPROMO):
+    for fonte in FONTES_DE_PRECO:
         da_fonte = [r.piso for r in resultados if r.fonte == fonte and r.piso is not None]
         if da_fonte:
             partes.append(f"<i>{fonte}: piso R$ {reais(min(da_fonte))}</i>")
@@ -346,6 +349,9 @@ def montar_mensagem(cfg: dict, resultados: list[Resultado], faixa: str,
         # So faz sentido falar em recorde depois de algumas medicoes.
         if piso <= minimo and len(historico) >= 5:
             partes.append("⭐ <b>É o menor preço já registrado pelo monitor.</b>")
+
+    if posts:
+        partes += ["", f"━━ <b>{MELHORESDESTINOS}</b> ━━"] + [p.linha() for p in posts[:3]]
 
     if resumo:
         partes.append(f"<i>Resumo diário · {len(historico)} medições em 30 dias</i>")
@@ -417,7 +423,59 @@ def coletar(cfg: dict, proxy: str | None) -> list[Resultado]:
                     break
             resultados.append(buscar_vaidepromo(cfg, destino, ida, volta, log, providers))
 
+    for destino in cfg.get("destinos_passagenspromo", []):
+        for ida, volta in pares:
+            resultados.append(buscar_passagenspromo(cfg, destino, ida, volta, log))
+
     return resultados
+
+
+# --------------------------------------------------------------------------- #
+# Melhores Destinos (radar de posts)
+# --------------------------------------------------------------------------- #
+
+def carregar_vistos() -> set[int]:
+    try:
+        return set(json.loads(POSTS_VISTOS.read_text(encoding="utf-8")))
+    except (FileNotFoundError, json.JSONDecodeError, TypeError):
+        return set()
+
+
+def posts_novos(posts: list[Post], vistos: set[int]) -> list[Post]:
+    return [p for p in posts if p.id not in vistos]
+
+
+def mensagem_posts(cfg: dict, novos: list[Post]) -> str:
+    nomes = cfg.get("nomes", {})
+    origem_nome = nomes.get(cfg["origem"], cfg["origem"])
+    destino_nome = cfg.get("titulo_destino", "Destino")
+    plural = "post novo" if len(novos) == 1 else f"{len(novos)} posts novos"
+    return "\n".join(
+        [f"📰 <b>{MELHORESDESTINOS}: {plural} sobre {origem_nome} ⇄ {destino_nome}</b>", ""]
+        + [p.linha() for p in novos]
+        + ["", f"<i>{agora():%d/%m %H:%M} BRT</i>"]
+    )
+
+
+def radar_melhoresdestinos(cfg: dict, dry_run: bool) -> list[Post]:
+    """Avisa uma vez por post (os ids ja avisados ficam em state/). Falha aqui
+    so vai para o log: o blog e complemento, nao pode derrubar o monitor."""
+    if not cfg.get("melhoresdestinos", {}).get("ativo", True):
+        return []
+    try:
+        posts = buscar_melhoresdestinos(cfg, log)
+    except RuntimeError as exc:
+        log(f"  [MelhoresDestinos] ERRO {exc}")
+        return []
+
+    vistos = carregar_vistos()
+    novos = posts_novos(posts, vistos)
+    if novos:
+        enviar_telegram(mensagem_posts(cfg, novos), dry_run)
+        if not dry_run:
+            POSTS_VISTOS.write_text(json.dumps(sorted(vistos | {p.id for p in novos})),
+                                    encoding="utf-8")
+    return posts
 
 
 def main() -> int:
@@ -443,13 +501,15 @@ def main() -> int:
         f"| base de preço: {cfg.get('base_preco', BASE_PADRAO)}")
     resultados = coletar(cfg, proxy)
     gravar_historico(cfg, resultados)
+    posts = radar_melhoresdestinos(cfg, args.dry_run)
 
     pisos = [r.piso for r in resultados if r.piso is not None]
     if not pisos:
         log("Nenhuma fonte respondeu — possível bloqueio ou mudança nos sites.")
         enviar_telegram(
             "⚠️ <b>Monitor de voos falhou</b>\nNenhuma fonte respondeu nesta rodada. "
-            "Pode ser bloqueio do IP do runner ou mudança no Google Flights / Vai de Promo.\n"
+            "Pode ser bloqueio do IP do runner ou mudança no Google Flights / Vai de Promo / "
+            "Passagens Promo.\n"
             f"<i>{agora():%d/%m %H:%M} BRT</i>",
             args.dry_run,
         )
@@ -477,7 +537,7 @@ def main() -> int:
     else:
         rotulo = "envio manual"
 
-    enviar_telegram(montar_mensagem(cfg, resultados, faixa, piso, rotulo, args.resumo),
+    enviar_telegram(montar_mensagem(cfg, resultados, faixa, piso, rotulo, args.resumo, posts),
                     args.dry_run)
     if alertar and not args.dry_run:
         gravar_ultimo_alerta(piso, faixa)
