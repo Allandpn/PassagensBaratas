@@ -250,5 +250,16 @@ check("aviso do blog usa origem/destino da config", "Florianópolis ⇄ Piauí" 
 msg_md = m._sem_tags(m.montar_mensagem(cfg_1x7, res, "alerta", 966, "teste", resumo=True, posts=rota))
 check("resumo inclui a seção do blog", "━━ Melhores Destinos ━━" in msg_md, True)
 
+print("\nNotificação por ntfy (título = primeira linha, sem tags):")
+capturado = {}
+ntfy_original = m.enviar_ntfy
+m.enviar_ntfy = lambda titulo, texto, dry_run: capturado.update(titulo=titulo, texto=texto)
+m.notificar("<b>🔥 Cabeçalho</b>\nlinha 2\nlinha 3", dry_run=True)
+m.enviar_ntfy = ntfy_original
+check("título do ntfy é a primeira linha sem tags", capturado["titulo"], "🔥 Cabeçalho")
+check("corpo do ntfy é o resto da mensagem", capturado["texto"], "linha 2\nlinha 3")
+check("NTFY_TOPIC ausente não derruba o envio (só pula)",
+      m.enviar_ntfy("x", "y", dry_run=False), None)
+
 print("\n" + ("TUDO OK" if not falhas else "FALHAS:\n  " + "\n  ".join(falhas)))
 sys.exit(1 if falhas else 0)

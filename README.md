@@ -207,6 +207,16 @@ python setup_telegram.py SEU_TOKEN_AQUI
 
 Ele imprime o `TELEGRAM_CHAT_ID` e manda uma mensagem de teste.
 
+**1b. Push no celular via ntfy** (opcional, 1 minuto)
+
+- Instale o app [ntfy](https://ntfy.sh/app) (Android/iOS) e inscreva-se num
+  tópico (o nome do tópico funciona como senha — escolha algo difícil de
+  adivinhar, tipo `passagens-baratas-XXXXXXX`).
+- Guarde o nome do tópico como `NTFY_TOPIC`. Se usar servidor próprio em vez
+  do público `ntfy.sh`, guarde a URL como `NTFY_SERVER`.
+- Sem `NTFY_TOPIC` configurado, o monitor simplesmente não manda nada por
+  esse canal — o Telegram continua funcionando normalmente.
+
 **2. Subir para o GitHub**
 
 ```bash
@@ -224,6 +234,8 @@ No repositório: **Settings → Secrets and variables → Actions → New reposi
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | token do BotFather |
 | `TELEGRAM_CHAT_ID` | número que o `setup_telegram.py` imprimiu |
+| `NTFY_TOPIC` | *(opcional)* tópico do ntfy pra push no celular |
+| `NTFY_SERVER` | *(opcional)* só se usar servidor próprio em vez do `ntfy.sh` |
 | `PROXY_URL` | *(opcional)* proxy, caso o Google bloqueie o IP do runner |
 
 **4. Testar**
