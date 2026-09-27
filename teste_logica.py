@@ -2,6 +2,7 @@
 """Teste offline: janela de datas, bases de preco, faixas, anti-spam e
 montagem da mensagem. Nao usa rede."""
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -260,6 +261,21 @@ check("título do ntfy é a primeira linha sem tags", capturado["titulo"], "🔥
 check("corpo do ntfy é o resto da mensagem", capturado["texto"], "linha 2\nlinha 3")
 check("NTFY_TOPIC ausente não derruba o envio (só pula)",
       m.enviar_ntfy("x", "y", dry_run=False), None)
+
+# Regressao real: o workflow sempre declara NTFY_SERVER no ambiente, mesmo
+# sem o secret cadastrado -- a variavel chega vazia, nao ausente. Isso
+# derrubou uma execucao de producao com "unknown url type: '/'".
+_ntfy_server_orig = os.environ.pop("NTFY_SERVER", None)
+os.environ["NTFY_SERVER"] = ""
+check("NTFY_SERVER vazio (secret nao cadastrado) cai no padrão",
+      m._servidor_ntfy(), "https://ntfy.sh")
+os.environ["NTFY_SERVER"] = "https://meu-ntfy.example.com/"
+check("NTFY_SERVER customizado é respeitado (sem barra sobrando)",
+      m._servidor_ntfy(), "https://meu-ntfy.example.com")
+if _ntfy_server_orig is None:
+    os.environ.pop("NTFY_SERVER", None)
+else:
+    os.environ["NTFY_SERVER"] = _ntfy_server_orig
 
 print("\n" + ("TUDO OK" if not falhas else "FALHAS:\n  " + "\n  ".join(falhas)))
 sys.exit(1 if falhas else 0)
