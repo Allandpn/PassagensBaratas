@@ -144,10 +144,15 @@ POST /api/flight/v1/search/inbound    {"searchKey":...,"flightKey":<ida>}    ←
   barata de cada companhia/fornecedor (`max_idas_passagenspromo`, padrão 3).
 - A taxa de serviço vem embutida na tarifa: aqui `com_taxas` e `total` saem
   iguais.
-- Sem o cabeçalho `ApplicationName` a API responde 200 com corpo vazio — o
-  monitor trata isso como erro e repete. Assim como no Vai de Promo, é preciso
-  impersonar o TLS de um navegador (`primp`): sem isso a API também responde
-  200 vazio.
+- **HTTP 200 com corpo vazio não é erro** no `/search/inbound`: é a API
+  dizendo "essa ida não tem volta desse fornecedor nessa data" — confirmado
+  ao vivo comparando a mesma sessão/cabeçalhos numa rota que funciona (Rio) e
+  numa que não tem volta (Parnaíba: todas as 7 idas testadas vieram vazias no
+  `/search/inbound`, enquanto o `/search` e o `/search/outbound` funcionaram
+  normalmente). O monitor loga como "sem volta pra essa ida" e segue pra
+  próxima, sem contar como falha.
+- Assim como no Vai de Promo, é preciso impersonar o TLS de um navegador
+  (`primp`): sem isso a API responde 200 vazio em qualquer chamada.
 
 `robots.txt` do domínio: `Disallow:` vazio, tudo liberado.
 
