@@ -18,7 +18,10 @@ Passagens Promo
     serverless.api.onertravel.com: um POST abre a busca e devolve uma
     searchKey, e depois /search/outbound e /search/inbound listam ida e volta
     separadas, cada uma com o proprio preco. O ida e volta e a soma das duas.
-    O robots.txt do dominio e "Disallow:" vazio -- tudo liberado.
+    O robots.txt do dominio e "Disallow:" vazio -- tudo liberado. Corpo vazio
+    com HTTP 200 nao e erro: e a API dizendo "sem resultado" (ex.: aquela ida
+    especifica nao tem volta do mesmo fornecedor na data pedida) -- confirmado
+    ao vivo comparando a mesma sessao/cabecalhos numa rota que funciona.
 
 Melhores Destinos
     Nao e buscador, e blog de promocao. Nao tem preco por data para consultar,
@@ -409,8 +412,7 @@ def buscar_vaidepromo(cfg: dict, destino: str, ida: str, volta: str, log,
 
 PP_API = "https://serverless.api.onertravel.com/api/flight/v1"
 PP_PAGINA = "https://app.passagenspromo.com.br/loja/flight-list"
-# Os mesmos cabecalhos que o interceptor do front poe em toda chamada. Sem o
-# ApplicationName a API responde 200 com corpo vazio em vez de erro.
+# Os mesmos cabecalhos que o interceptor do front poe em toda chamada.
 PP_HEADERS = {
     "Origin": "https://app.passagenspromo.com.br",
     "Referer": "https://app.passagenspromo.com.br/",
@@ -440,11 +442,17 @@ def _url_pp(cfg: dict, destino: str, ida: str, volta: str) -> str:
 
 
 def _post_pp(cliente, caminho: str, corpo: dict, extra: dict | None = None) -> dict:
+    """200 com corpo vazio nao e erro -- testado ao vivo em FLN-PHB: mesma
+    sessao/cabecalhos que funcionam para outros destinos, /search e
+    /search/outbound normais, e so o /search/inbound de um par ida+fornecedor
+    sem volta correspondente vem vazio. E como a API diz "sem resultado", nao
+    "cabecalho recusado". Quem chama trata a ausencia via .get(...); /search
+    tem checagem propria (sem searchKey levanta erro explicito la)."""
     r = cliente.post(PP_API + caminho, headers={**PP_HEADERS, **(extra or {})}, json=corpo)
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code}")
     if not r.text.strip():
-        raise RuntimeError("resposta vazia (cabeçalhos recusados?)")
+        return {}
     return json.loads(r.text)
 
 
@@ -572,6 +580,8 @@ def buscar_passagenspromo(cfg: dict, destino: str, ida: str, volta: str, log) ->
         if voltas:
             melhor_volta = min(voltas, key=lambda v: v["price"]["total"])
             ofertas.append(_oferta_pp(cfg, voo_ida, melhor_volta, destino, ida, volta))
+        else:
+            log(f"  [PassagensPromo] {res.rotulo} {voo_ida.get('source')}: sem volta pra essa ida")
 
     if ofertas:
         res.ofertas = sorted(ofertas, key=lambda o: o.preco)
