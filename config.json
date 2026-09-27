@@ -1,8 +1,8 @@
 {
   "origem": "FLN",
-  "destinos": ["THE", "PHB"],
-  "destinos_vaidepromo": ["THE", "PHB"],
-  "destinos_passagenspromo": ["THE", "PHB"],
+  "destinos": ["THE"],
+  "destinos_vaidepromo": ["THE"],
+  "destinos_passagenspromo": ["THE"],
   "max_idas_passagenspromo": 3,
   "timeout_pp_seg": 90,
   "titulo_destino": "Piauí",
