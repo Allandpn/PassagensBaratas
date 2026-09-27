@@ -177,5 +177,78 @@ urls = f.urls_de_busca(cfg_1x7, providers, "FLNGIG261031-GIGFLN261123")
 check("10 entradas viram 6 buscas", len(urls), 6)
 check("sem endpoint é ignorado", "XX" in urls, False)
 
+print("\nPassagens Promo (ida + volta somadas):")
+
+
+def perna_pp(total, price, tax, fonte=48, cia="LA", nome="LATAM AIRLINES ", ori="FLN", des="SDU"):
+    ponto = lambda iata, dia, h: {"iata": iata, "date": {"year": 2026, "month": 10, "day": dia},
+                                  "time": {"hour": h, "minute": 5}}
+    return {"key": f"{cia}-{total}", "source": fonte,
+            "price": {"total": total, "price": price, "tax": tax},
+            "journey": {"numberOfStops": 1, "marketingAirline": {"iata": cia, "name": nome},
+                        "departure": ponto(ori, 31, 11), "destination": ponto(des, 31, 20),
+                        "segments": [{"destination": {"iata": "GRU"}},
+                                     {"destination": {"iata": des}}]}}
+
+
+ida_pp = perna_pp(560.81, 425.89, 134.92)
+volta_pp = perna_pp(950.82, 879.9, 70.92, ori="SDU", des="FLN")
+oferta_pp = f._oferta_pp({"base_preco": "tarifa"}, ida_pp, volta_pp, "RIO",
+                         "2026-10-31", "2026-11-22")
+check("tarifa soma as duas pernas", oferta_pp.tarifa, round(425.89 + 879.9))
+check("com taxas soma tarifa + embarque", oferta_pp.com_taxas, round(425.89 + 134.92 + 879.9 + 70.92))
+check("total soma os totais", oferta_pp.total, round(560.81 + 950.82))
+check("preco segue a base_preco", oferta_pp.preco, oferta_pp.tarifa)
+check("rota da ida", oferta_pp.rota, "FLN-GRU-SDU")
+check("companhia sem espaço sobrando", oferta_pp.companhia, "Latam Airlines")
+check("destino é o aeroporto real, não o código de cidade", oferta_pp.destino, "SDU")
+check("horário de partida", oferta_pp.partida, "31/10 11:05")
+
+idas = [perna_pp(560.81, 1, 1), perna_pp(600, 1, 1),                    # LATAM duas vezes
+        perna_pp(577.86, 1, 1, fonte=42, cia="G3"), perna_pp(590, 1, 1, fonte=42, cia="G3"),
+        perna_pp(700, 1, 1, fonte=7, cia="AD")]
+cand = f.idas_candidatas(idas, 3)
+check("uma ida por fornecedor+companhia", [v["price"]["total"] for v in cand], [560.81, 577.86, 700])
+check("teto de idas", len(f.idas_candidatas(idas, 2)), 2)
+url_pp = f._url_pp(cfg_1x7, "THE", "2026-10-31", "2026-11-22")
+check("link do Passagens Promo",
+      url_pp.startswith("https://app.passagenspromo.com.br/loja/flight-list?departureDate=2026-10-31"),
+      True)
+print("      " + url_pp)
+
+print("\nMelhores Destinos:")
+PAGINA_MD = """
+<article id="post-700" class="post"><h2>
+  <a href="https://www.melhoresdestinos.com.br/promo-floripa-rio.html" title="x">Voos de Floripa para o Rio de Janeiro a partir de R$ 389 ida e volta</a>
+</h2><span class="date">há 2 horas</span><p>Promo da Gol com taxas; também há opção por R$ 1.049 com bagagem.</p></article>
+<article id="post-650" class="post"><h2>
+  <a href="https://www.melhoresdestinos.com.br/voos-florianopolis-assuncao-gol.html">Gol terá voos de Florianópolis para o Paraguai</a>
+</h2><span class="date">há 1 semana</span><p>Nova rota internacional &#8211; verão.</p></article>
+<article id="post-640" class="post"><h2>
+  <a href="https://www.melhoresdestinos.com.br/cataratas.html">Cataratas reabrem após cheia do rio</a>
+</h2><span class="date">há 2 semanas</span><p>Foz do Iguaçu.</p></article>
+"""
+posts = f.extrair_posts(PAGINA_MD)
+check("lê os três posts", [p.id for p in posts], [700, 650, 640])
+check("título com entidades decodificadas", posts[1].resumo, "Nova rota internacional – verão.")
+check("preços do título e do resumo", posts[0].precos, [389, 1049])
+check("data relativa", posts[0].quando, "há 2 horas")
+md_teste = {"termos_origem": ["florianópolis", "floripa"], "termos_destino": ["rio de janeiro", "rio"]}
+rota = f.posts_da_rota(posts, md_teste)
+check("só o post que cita as duas pontas", [p.id for p in rota], [700])
+check("MD_PADRAO sem termos_destino configurado não casa nada (evita falso positivo)",
+      f.posts_da_rota(posts, f.MD_PADRAO), [])
+check("sem acento também casa",
+      f._cita("Voos para Florianopolis e Galeao", ["florianópolis"]), True)
+check("'rio' não casa dentro de outra palavra", f._cita("Hotel Riomar", ["rio"]), False)
+check("linha do post mostra o menor preço", "a partir de R$ 389" in rota[0].linha(), True)
+check("post novo é o que não foi visto", [p.id for p in m.posts_novos(posts, {650, 640})], [700])
+check("nada novo quando tudo foi visto", m.posts_novos(posts, {700, 650, 640}), [])
+aviso_md = m._sem_tags(m.mensagem_posts(cfg_1x7, rota))
+check("aviso do blog tem link", "promo-floripa-rio.html" in aviso_md, True)
+check("aviso do blog usa origem/destino da config", "Florianópolis ⇄ Piauí" in aviso_md, True)
+msg_md = m._sem_tags(m.montar_mensagem(cfg_1x7, res, "alerta", 966, "teste", resumo=True, posts=rota))
+check("resumo inclui a seção do blog", "━━ Melhores Destinos ━━" in msg_md, True)
+
 print("\n" + ("TUDO OK" if not falhas else "FALHAS:\n  " + "\n  ".join(falhas)))
 sys.exit(1 if falhas else 0)

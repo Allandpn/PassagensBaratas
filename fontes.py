@@ -13,6 +13,20 @@ Vai de Promo
     paginas de pagamento sao Disallow. Traz voo direto que o Google nao lista
     e separa o preco em tres numeros (ver "Bases de preco" abaixo).
 
+Passagens Promo
+    Loja white-label da OnerTravel (app.passagenspromo.com.br). O front chama
+    serverless.api.onertravel.com: um POST abre a busca e devolve uma
+    searchKey, e depois /search/outbound e /search/inbound listam ida e volta
+    separadas, cada uma com o proprio preco. O ida e volta e a soma das duas.
+    O robots.txt do dominio e "Disallow:" vazio -- tudo liberado.
+
+Melhores Destinos
+    Nao e buscador, e blog de promocao. Nao tem preco por data para consultar,
+    entao entra como radar: le a listagem da categoria de promocoes e separa
+    os posts que citam as duas pontas da rota. O /wp-json/ deles responde
+    sempre a mesma lista congelada (ignora busca, data e categoria) e o /feed/
+    e Disallow no robots.txt, por isso a leitura e do HTML da categoria.
+
 
 Bases de preco
     O Vai de Promo devolve tres valores para a mesma tarifa, e a tela do site
@@ -30,9 +44,13 @@ Bases de preco
 """
 from __future__ import annotations
 
+import html
 import json
 import random
+import re
 import time
+import unicodedata
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -41,6 +59,9 @@ from fast_flights import FlightQuery, Passengers, create_query, get_flights
 
 GOOGLE = "Google Flights"
 VAIDEPROMO = "Vai de Promo"
+PASSAGENSPROMO = "Passagens Promo"
+MELHORESDESTINOS = "Melhores Destinos"
+FONTES_DE_PRECO = (GOOGLE, VAIDEPROMO, PASSAGENSPROMO)
 
 VDP_PROVIDERS = "https://site.aereo.vaidepromo.com.br/api/air/providers/{ori}/{des}/{data}/"
 VDP_PAGINA = "https://www.vaidepromo.com.br/passagens-aereas/pesquisa/{token}/{ad}/0/0/Y/"
@@ -380,3 +401,281 @@ def buscar_vaidepromo(cfg: dict, destino: str, ida: str, volta: str, log,
     elif falhas:
         res.erro = "falha nas companhias: " + ", ".join(falhas)
     return res
+
+
+# --------------------------------------------------------------------------- #
+# Passagens Promo (OnerTravel)
+# --------------------------------------------------------------------------- #
+
+PP_API = "https://serverless.api.onertravel.com/api/flight/v1"
+PP_PAGINA = "https://app.passagenspromo.com.br/loja/flight-list"
+# Os mesmos cabecalhos que o interceptor do front poe em toda chamada. Sem o
+# ApplicationName a API responde 200 com corpo vazio em vez de erro.
+PP_HEADERS = {
+    "Origin": "https://app.passagenspromo.com.br",
+    "Referer": "https://app.passagenspromo.com.br/",
+    "Accept": "application/json",
+    "Authorization": "Bearer ",
+    "Language": "4",
+    "Currencie": "1",
+    "Currency": "1",
+    "Platform": "WEBAPP",
+    "InstitutionId": "41",
+    "AgentId": "86185",
+    "ApplicationAccessType": "1",
+    "ApplicationName": "PASSAGENSPROMO",
+    "X-Location-href": PP_PAGINA,
+}
+PP_MENOR_PRECO = 0      # ordinationEnum: LOWERVALUE
+PP_INTERVALO_SEG = 6    # entre as leituras da lista enquanto a busca enche
+
+
+def _url_pp(cfg: dict, destino: str, ida: str, volta: str) -> str:
+    return PP_PAGINA + "?" + urllib.parse.urlencode({
+        "departureDate": ida, "returnDate": volta, "isRoundTrip": "true",
+        "adultsCount": cfg["adultos"], "childCount": 0, "infantCount": 0, "teenagerCount": 0,
+        "departureIata": cfg["origem"], "arrivalIata": destino,
+        "isDepartureIataCity": "false", "isArrivalIataCity": "true", "source": "f",
+    })
+
+
+def _post_pp(cliente, caminho: str, corpo: dict, extra: dict | None = None) -> dict:
+    r = cliente.post(PP_API + caminho, headers={**PP_HEADERS, **(extra or {})}, json=corpo)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    if not r.text.strip():
+        raise RuntimeError("resposta vazia (cabeçalhos recusados?)")
+    return json.loads(r.text)
+
+
+def _pagina_pp(chave: str, voo_ida: str | None = None) -> dict:
+    corpo = {"searchKey": chave, "page": 1, "pageSize": 10,
+             "filter": {"maxStopsEnum": 0}, "ordinationEnum": PP_MENOR_PRECO}
+    if voo_ida:
+        corpo["flightKey"] = voo_ida
+    return corpo
+
+
+def _idas_pp(cliente, cfg: dict, chave: str) -> list[dict]:
+    """O site espera um websocket avisar que as companhias responderam. Aqui
+    basta reler a lista ate a contagem parar de mudar entre duas leituras."""
+    limite = time.monotonic() + cfg.get("timeout_pp_seg", 90)
+    anterior = None
+    while True:
+        time.sleep(PP_INTERVALO_SEG)
+        dados = _post_pp(cliente, "/search/outbound", _pagina_pp(chave))
+        total = dados.get("totalFlightsCount") or 0
+        if (total and total == anterior) or time.monotonic() > limite:
+            return dados.get("flights") or []
+        anterior = total
+
+
+def _hora_pp(ponto: dict) -> str:
+    d, t = ponto.get("date") or {}, ponto.get("time") or {}
+    try:
+        return f"{d['day']:02d}/{d['month']:02d} {t['hour']:02d}:{t['minute']:02d}"
+    except (KeyError, TypeError):
+        return "?"
+
+
+def _oferta_pp(cfg: dict, ida: dict, volta: dict, destino: str,
+               data_ida: str, data_volta: str) -> Oferta:
+    """Ida e volta vem com preco proprio; o ida e volta e a soma. Em cada perna
+    `price` e a tarifa, `tax` a taxa de embarque e `total` = price + tax. A
+    taxa de servico (`serviceTax`) ja vem embutida no `price`, entao aqui
+    com_taxas e total saem iguais -- ao contrario do Vai de Promo, que cobra a
+    taxa de servico por fora."""
+    pi, pv = ida["price"], volta["price"]
+    ji = ida["journey"]
+    segmentos = ji.get("segments") or []
+    rota = "-".join([ji["departure"]["iata"]] + [s["destination"]["iata"] for s in segmentos]) \
+        if segmentos else f"{ji['departure']['iata']}-{ji['destination']['iata']}"
+    companhias = {
+        (j.get("marketingAirline") or {}).get("name", "").strip().title()
+        for j in (ji, volta["journey"])
+    } - {""}
+    tarifa = round(pi["price"] + pv["price"])
+    com_taxas = round(pi["price"] + pi["tax"] + pv["price"] + pv["tax"])
+    total = round(pi["total"] + pv["total"])
+    return Oferta(
+        preco=escolher_base(cfg, tarifa, com_taxas, total),
+        tarifa=tarifa,
+        com_taxas=com_taxas,
+        total=total,
+        companhia="/".join(sorted(companhias)) or "?",
+        rota=rota,
+        partida=_hora_pp(ji["departure"]),
+        chegada=_hora_pp(ji["destination"]),
+        paradas=int(ji.get("numberOfStops") or 0),
+        destino=ji["destination"].get("iata") or destino,
+        fonte=PASSAGENSPROMO,
+        data_ida=data_ida,
+        data_volta=data_volta,
+    )
+
+
+def idas_candidatas(voos: list[dict], maximo: int) -> list[dict]:
+    """A volta so pode ser do mesmo fornecedor e companhia da ida escolhida, e
+    a ida mais barata nem sempre tem a volta mais barata (LATAM R$ 561 de ida
+    pedia R$ 951 de volta; Gol R$ 578 de ida tinha volta de R$ 571). Por isso
+    guarda a ida mais barata de cada (fornecedor, companhia)."""
+    vistos, saida = set(), []
+    for voo in sorted(voos, key=lambda v: v["price"]["total"]):
+        par = (voo.get("source"), (voo["journey"].get("marketingAirline") or {}).get("iata"))
+        if par in vistos:
+            continue
+        vistos.add(par)
+        saida.append(voo)
+        if len(saida) >= maximo:
+            break
+    return saida
+
+
+def buscar_passagenspromo(cfg: dict, destino: str, ida: str, volta: str, log) -> Resultado:
+    res = Resultado(fonte=PASSAGENSPROMO, destino=destino, data_ida=ida, data_volta=volta,
+                    url=_url_pp(cfg, destino, ida, volta))
+    cliente = primp.Client(impersonate=VDP_IMPERSONATE, timeout=cfg.get("timeout_vdp_seg", 120))
+    pausa = cfg["pausa_entre_buscas_seg"]
+    busca = {
+        "departureDate": ida, "returnDate": volta,
+        "departureStation": cfg["origem"], "arrivalStation": destino,
+        "paxAdtCount": cfg["adultos"], "paxChdCount": 0, "paxInfCount": 0,
+    }
+
+    try:
+        chave = _tentar(lambda: _post_pp(cliente, "/search", busca, {"isPackage": "false"}),
+                        cfg["tentativas"], log).get("searchKey")
+        if not chave:
+            raise RuntimeError("busca sem searchKey")
+        idas = _tentar(lambda: _idas_pp(cliente, cfg, chave), cfg["tentativas"], log)
+    except RuntimeError as exc:
+        log(f"  [PassagensPromo] {res.rotulo}: ERRO {exc}")
+        res.erro = str(exc)
+        return res
+
+    if not idas:
+        log(f"  [PassagensPromo] {res.rotulo}: sem voo de ida")
+        return res
+
+    ofertas: list[Oferta] = []
+    for voo_ida in idas_candidatas(idas, cfg.get("max_idas_passagenspromo", 3)):
+        time.sleep(pausa)
+        try:
+            voltas = _tentar(
+                lambda k=voo_ida["key"]: _post_pp(cliente, "/search/inbound", _pagina_pp(chave, k)),
+                cfg["tentativas"], log,
+            ).get("flights") or []
+        except RuntimeError as exc:
+            log(f"  [PassagensPromo] {res.rotulo} volta: ERRO {exc}")
+            res.erro = str(exc)
+            continue
+        if voltas:
+            melhor_volta = min(voltas, key=lambda v: v["price"]["total"])
+            ofertas.append(_oferta_pp(cfg, voo_ida, melhor_volta, destino, ida, volta))
+
+    if ofertas:
+        res.ofertas = sorted(ofertas, key=lambda o: o.preco)
+        res.piso = res.ofertas[0].preco
+        res.erro = None
+        log(f"  [PassagensPromo] {res.rotulo}: {len(idas)} idas, {len(ofertas)} combinações, "
+            f"piso R$ {res.piso}")
+    return res
+
+
+# --------------------------------------------------------------------------- #
+# Melhores Destinos (radar de posts)
+# --------------------------------------------------------------------------- #
+
+MD_CATEGORIA = "https://www.melhoresdestinos.com.br/category/{slug}"
+MD_ARTIGO = re.compile(r'<article id="post-(\d+)"(.*?)</article>', re.S)
+MD_LINK = re.compile(r'<h2>\s*<a href="([^"]+)"[^>]*>(.*?)</a>', re.S)
+MD_DATA = re.compile(r'<span class="date">(.*?)</span>', re.S)
+MD_RESUMO = re.compile(r"<p>(.*?)</p>", re.S)
+REAIS_NO_TEXTO = re.compile(r"R\$\s?(\d{1,3}(?:\.\d{3})+|\d+)")
+
+# termos_destino fica vazio de proposito: a rota muda por config.json, e um
+# post so entra no radar quando as duas pontas (origem e destino) sao citadas.
+MD_PADRAO = {
+    "categorias": ["promocoes-passagens-aereas"],
+    "paginas": 1,
+    "termos_origem": ["florianópolis", "floripa", "FLN"],
+    "termos_destino": [],
+}
+
+
+@dataclass
+class Post:
+    id: int
+    titulo: str
+    link: str
+    resumo: str
+    quando: str                 # o site so da data relativa ("há 2 dias")
+    precos: list[int] = field(default_factory=list)
+
+    def linha(self) -> str:
+        preco = f" · a partir de R$ {reais(min(self.precos))}" if self.precos else ""
+        return f'• <a href="{self.link}">{html.escape(self.titulo)}</a>{preco} <i>({self.quando})</i>'
+
+
+def _sem_acento(texto: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", texto.lower())
+                   if unicodedata.category(c) != "Mn")
+
+
+def _cita(texto: str, termos: list[str]) -> bool:
+    alvo = _sem_acento(texto)
+    return any(re.search(rf"\b{re.escape(_sem_acento(t))}\b", alvo) for t in termos)
+
+
+def _texto(fragmento: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", fragmento)).strip()
+
+
+def extrair_posts(pagina: str) -> list[Post]:
+    posts = []
+    for pid, corpo in MD_ARTIGO.findall(pagina):
+        link = MD_LINK.search(corpo)
+        if not link:
+            continue
+        data, resumo = MD_DATA.search(corpo), MD_RESUMO.search(corpo)
+        titulo = _texto(link.group(2))
+        resumo_txt = _texto(resumo.group(1)) if resumo else ""
+        precos = [int(p.replace(".", "")) for p in REAIS_NO_TEXTO.findall(f"{titulo} {resumo_txt}")]
+        posts.append(Post(id=int(pid), titulo=titulo, link=link.group(1), resumo=resumo_txt,
+                          quando=_texto(data.group(1)) if data else "", precos=precos))
+    return posts
+
+
+def posts_da_rota(posts: list[Post], md: dict) -> list[Post]:
+    """So interessa post que cita as duas pontas: 'Floripa' sozinho traz voo
+    para outro destino qualquer, e o nome do destino sozinho pode aparecer em
+    contexto que nada tem a ver com a rota (ex.: "cheia do rio" em Foz)."""
+    if not md.get("termos_destino"):
+        return []
+    return [p for p in posts
+            if _cita(f"{p.titulo} {p.resumo}", md["termos_origem"])
+            and _cita(f"{p.titulo} {p.resumo}", md["termos_destino"])]
+
+
+def buscar_melhoresdestinos(cfg: dict, log) -> list[Post]:
+    md = {**MD_PADRAO, **cfg.get("melhoresdestinos", {})}
+    cliente = primp.Client(impersonate=VDP_IMPERSONATE, timeout=60)
+    todos: dict[int, Post] = {}
+    for slug in md["categorias"]:
+        for n in range(1, md["paginas"] + 1):
+            url = MD_CATEGORIA.format(slug=slug) + (f"/page/{n}" if n > 1 else "")
+
+            def ler(u=url):
+                r = cliente.get(u)
+                if r.status_code != 200:
+                    raise RuntimeError(f"HTTP {r.status_code}")
+                return r.text
+
+            posts = extrair_posts(_tentar(ler, cfg["tentativas"], log))
+            if not posts:
+                raise RuntimeError(f"nenhum post reconhecido em {url} (layout mudou?)")
+            for p in posts:
+                todos.setdefault(p.id, p)
+    achados = sorted(posts_da_rota(list(todos.values()), md), key=lambda p: -p.id)
+    log(f"  [MelhoresDestinos] {len(todos)} posts lidos, {len(achados)} sobre a rota")
+    return achados
