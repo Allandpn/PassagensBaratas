@@ -398,6 +398,15 @@ def enviar_telegram(texto: str, dry_run: bool) -> None:
     log("Mensagem enviada no Telegram.")
 
 
+def _servidor_ntfy() -> str:
+    """O workflow sempre declara NTFY_SERVER no ambiente (env: NTFY_SERVER:
+    ${{ secrets.NTFY_SERVER }}); quando o secret não existe, a variável chega
+    vazia, não ausente -- então os.environ.get(chave, padrao) não cai no
+    padrão (só funciona pra chave ausente). Por isso o "or" aqui, em vez de
+    depender do default do .get()."""
+    return (os.environ.get("NTFY_SERVER", "").strip() or "https://ntfy.sh").rstrip("/")
+
+
 def enviar_ntfy(titulo: str, texto: str, dry_run: bool) -> None:
     """Push no celular via ntfy (ntfy.sh ou servidor próprio em NTFY_SERVER).
     Publica como JSON em vez de cabeçalhos HTTP porque acento/emoji no título
@@ -408,7 +417,7 @@ def enviar_ntfy(titulo: str, texto: str, dry_run: bool) -> None:
             log("NTFY_TOPIC ausente — pulando envio pelo ntfy.")
         return
 
-    servidor = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+    servidor = _servidor_ntfy()
     corpo = json.dumps({"topic": topico, "title": titulo, "message": texto},
                        ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(servidor + "/", data=corpo,

@@ -466,14 +466,20 @@ def _pagina_pp(chave: str, voo_ida: str | None = None) -> dict:
 
 def _idas_pp(cliente, cfg: dict, chave: str) -> list[dict]:
     """O site espera um websocket avisar que as companhias responderam. Aqui
-    basta reler a lista ate a contagem parar de mudar entre duas leituras."""
+    basta reler a lista ate a contagem parar de mudar entre duas leituras.
+
+    "total and total == anterior" tratava zero como "ainda carregando" (0 e
+    falsy), entao uma rota sem voo nenhum (ex.: Parnaiba em varias datas)
+    nunca via a contagem "estabilizar" e esperava o timeout_pp_seg inteiro
+    (90s) em toda combinacao -- medido ao vivo, isso sozinho explicou a
+    maior parte de uma execucao de 33 min com so 12 combinacoes."""
     limite = time.monotonic() + cfg.get("timeout_pp_seg", 90)
     anterior = None
     while True:
         time.sleep(PP_INTERVALO_SEG)
         dados = _post_pp(cliente, "/search/outbound", _pagina_pp(chave))
         total = dados.get("totalFlightsCount") or 0
-        if (total and total == anterior) or time.monotonic() > limite:
+        if total == anterior or time.monotonic() > limite:
             return dados.get("flights") or []
         anterior = total
 
