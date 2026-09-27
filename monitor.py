@@ -398,6 +398,37 @@ def enviar_telegram(texto: str, dry_run: bool) -> None:
     log("Mensagem enviada no Telegram.")
 
 
+def enviar_ntfy(titulo: str, texto: str, dry_run: bool) -> None:
+    """Push no celular via ntfy (ntfy.sh ou servidor próprio em NTFY_SERVER).
+    Publica como JSON em vez de cabeçalhos HTTP porque acento/emoji no título
+    quebra em header (ntfy aceita os dois jeitos, mas so o JSON e 8-bit seguro)."""
+    topico = os.environ.get("NTFY_TOPIC", "").strip()
+    if dry_run or not topico:
+        if not dry_run:
+            log("NTFY_TOPIC ausente — pulando envio pelo ntfy.")
+        return
+
+    servidor = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+    corpo = json.dumps({"topic": topico, "title": titulo, "message": texto},
+                       ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(servidor + "/", data=corpo,
+                                 headers={"Content-Type": "application/json; charset=utf-8"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"ntfy recusou a mensagem: HTTP {resp.status}")
+    log("Mensagem enviada pelo ntfy.")
+
+
+def notificar(texto_html: str, dry_run: bool) -> None:
+    """Manda a mesma mensagem no Telegram (que renderiza o HTML) e no ntfy
+    (texto puro — o app não interpreta as tags). O título do ntfy é a
+    primeira linha da mensagem, o cabeçalho com o emoji."""
+    enviar_telegram(texto_html, dry_run)
+    texto_puro = _sem_tags(texto_html)
+    titulo, _, corpo = texto_puro.partition("\n")
+    enviar_ntfy(titulo.strip(), corpo.strip() or titulo.strip(), dry_run)
+
+
 # --------------------------------------------------------------------------- #
 
 def coletar(cfg: dict, proxy: str | None) -> list[Resultado]:
@@ -471,7 +502,7 @@ def radar_melhoresdestinos(cfg: dict, dry_run: bool) -> list[Post]:
     vistos = carregar_vistos()
     novos = posts_novos(posts, vistos)
     if novos:
-        enviar_telegram(mensagem_posts(cfg, novos), dry_run)
+        notificar(mensagem_posts(cfg, novos), dry_run)
         if not dry_run:
             POSTS_VISTOS.write_text(json.dumps(sorted(vistos | {p.id for p in novos})),
                                     encoding="utf-8")
@@ -506,7 +537,7 @@ def main() -> int:
     pisos = [r.piso for r in resultados if r.piso is not None]
     if not pisos:
         log("Nenhuma fonte respondeu — possível bloqueio ou mudança nos sites.")
-        enviar_telegram(
+        notificar(
             "⚠️ <b>Monitor de voos falhou</b>\nNenhuma fonte respondeu nesta rodada. "
             "Pode ser bloqueio do IP do runner ou mudança no Google Flights / Vai de Promo / "
             "Passagens Promo.\n"
@@ -537,8 +568,8 @@ def main() -> int:
     else:
         rotulo = "envio manual"
 
-    enviar_telegram(montar_mensagem(cfg, resultados, faixa, piso, rotulo, args.resumo, posts),
-                    args.dry_run)
+    notificar(montar_mensagem(cfg, resultados, faixa, piso, rotulo, args.resumo, posts),
+             args.dry_run)
     if alertar and not args.dry_run:
         gravar_ultimo_alerta(piso, faixa)
     return 0
